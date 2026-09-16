@@ -149,7 +149,7 @@ export default function PagosList({ pagos, onActualizarPago, onEditPago, convert
                     {pago.estado_pago === 'pendiente' && (
                       <div className="flex space-x-2">
                         <button
-                          onClick={() => handleCambiarEstado(pago.id_pago, 'pagado')}
+                          onClick={() => handleCambiarEstado(pago.id_pago, 'Aprobado')}
                           disabled={actualizandoPago === pago.id_pago}
                           className="inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
