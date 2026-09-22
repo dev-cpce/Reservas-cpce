@@ -5,7 +5,15 @@ import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { revalidatePath } from 'next/cache';
 
-import { Reserva } from '@/types';
+import { Reserva, Recurso, NuevaReservaRecursoInput } from '@/types';
+import {
+  DURACIONES_VALIDAS_MINUTOS,
+  esDuracionValida,
+  calcularHoraFinPorDuracion,
+  haySolapamientoDeHorarios,
+  reservaBloqueaRecurso,
+  calcularFechaExpiracionPago
+} from '@/lib/recursoDisponibilidad';
 
 function obtenerFechaLocal(fecha: Date): string {
   return fecha.getFullYear() + '-' + 
@@ -15,13 +23,20 @@ function obtenerFechaLocal(fecha: Date): string {
 
 async function cargarRelacionesReservas(
   supabase: ReturnType<typeof createServerComponentClient>,
-  reservas: Array<{ id_cliente: number; id_cancha: number }>
+  reservas: Array<{ id_cliente: number; id_cancha: number; id_recurso?: number | null }>
 ) {
   const clientes = new Map<number, { nombre: string; apellido: string | null }>();
   const canchas = new Map<number, { nombre: string }>();
+  // Nuevo (Paso 3): resuelve el nombre del recurso para las reservas ya migradas.
+  const recursos = new Map<number, { nombre: string }>();
 
-  const idsCliente = Array.from(new Set(reservas.map(reserva => reserva.id_cliente).filter(id => Number.isFinite(Number(id)))));
-  const idsCancha = Array.from(new Set(reservas.map(reserva => reserva.id_cancha).filter(id => Number.isFinite(Number(id)))));
+  // id_cancha/id_recurso pueden ser NULL (Number(null) === 0 es finito, por eso se
+  // excluyen null/undefined explícitamente en vez de confiar solo en Number.isFinite).
+  const esIdValido = (id: unknown): id is number => typeof id === 'number' && Number.isFinite(id);
+
+  const idsCliente = Array.from(new Set(reservas.map(reserva => reserva.id_cliente).filter(esIdValido)));
+  const idsCancha = Array.from(new Set(reservas.map(reserva => reserva.id_cancha).filter(esIdValido)));
+  const idsRecurso = Array.from(new Set(reservas.map(reserva => reserva.id_recurso).filter(esIdValido)));
 
   if (idsCliente.length > 0) {
     const { data } = await supabase
@@ -50,7 +65,20 @@ async function cargarRelacionesReservas(
     });
   }
 
-  return { clientes, canchas };
+  if (idsRecurso.length > 0) {
+    const { data } = await supabase
+      .from('recurso')
+      .select('id_recurso, nombre')
+      .in('id_recurso', idsRecurso);
+
+    data?.forEach(recurso => {
+      recursos.set(recurso.id_recurso, {
+        nombre: recurso.nombre
+      });
+    });
+  }
+
+  return { clientes, canchas, recursos };
 }
 
 const verificarConectividad = async (supabase: ReturnType<typeof createServerComponentClient>) => {
@@ -269,12 +297,13 @@ export async function obtenerReservas() {
     }
 
     const filas = reservas || [];
-    const { clientes, canchas } = await cargarRelacionesReservas(supabase, filas);
+    const { clientes, canchas, recursos } = await cargarRelacionesReservas(supabase, filas);
 
     return filas.map(reserva => ({
       ...reserva,
       cliente: clientes.get(reserva.id_cliente) || null,
-      cancha: canchas.get(reserva.id_cancha) || null
+      cancha: canchas.get(reserva.id_cancha) || null,
+      recurso: recursos.get(reserva.id_recurso) || null
     }));
     
   } catch (error) {
@@ -455,12 +484,13 @@ export async function buscarReservas(query: string) {
       );
     });
 
-    const { clientes, canchas } = await cargarRelacionesReservas(supabase, reservasFiltradas);
+    const { clientes, canchas, recursos } = await cargarRelacionesReservas(supabase, reservasFiltradas);
 
     return reservasFiltradas.map(reserva => ({
       ...reserva,
       cliente: clientes.get(reserva.id_cliente) || null,
-      cancha: canchas.get(reserva.id_cancha) || null
+      cancha: canchas.get(reserva.id_cancha) || null,
+      recurso: recursos.get(reserva.id_recurso) || null
     }));
   } catch (error) {
         throw new Error('Error al buscar reservas: ' + (error as Error).message);
@@ -1309,6 +1339,238 @@ export async function obtenerTiempoRestanteReserva(idReserva: number) {
   } catch {
         return null;
   }
+}
+
+// ============================================================================
+// PASO 3: lógica de reservas migrada al modelo `recurso`.
+// Estas funciones son NUEVAS y conviven con las de `cancha` de arriba (que
+// siguen usándose desde app/(protected)/canchas, CanchaForm/CanchasList y el
+// dashboard). No se modificó ni se eliminó ninguna función legacy.
+// ============================================================================
+
+// Recursos activos y disponibles para reservar (equivalente a obtenerCanchasDisponibles
+// pero sobre la tabla `recurso`).
+export async function obtenerRecursosDisponibles(): Promise<Recurso[]> {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+    await verificarConectividad(supabase);
+
+    const { data: recursos, error } = await supabase
+      .from('recurso')
+      .select('*')
+      .eq('activo', true)
+      .order('nombre', { ascending: true });
+
+    if (error) {
+      if (error.message.includes('relation') && error.message.includes('does not exist')) {
+        throw new Error('La tabla "recurso" no existe en la base de datos.');
+      }
+      throw new Error('Error al cargar los recursos: ' + error.message);
+    }
+
+    return (recursos || []).filter(recurso => recurso.estado === 'DISPONIBLE');
+  } catch (error) {
+    throw new Error('Error al cargar los recursos: ' + (error as Error).message);
+  }
+}
+
+// Reservas que hoy bloquean el recurso (confirmadas, o pendientes con pago aún vigente).
+// Reemplaza a obtenerReservasPorFechaYCancha para el flujo basado en recurso.
+export async function obtenerReservasPorFechaYRecurso(fecha: string, idRecurso: number) {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+
+    const { data, error } = await supabase
+      .from('reserva')
+      .select('hora_inicio, hora_fin, estado_reserva, fecha_expiracion_pago')
+      .eq('fecha_reserva', fecha)
+      .eq('id_recurso', idRecurso)
+      .neq('estado_reserva', 'cancelada');
+
+    if (error) {
+      return [];
+    }
+
+    const ahora = new Date();
+    return (data || []).filter(reserva => reservaBloqueaRecurso(reserva, ahora));
+  } catch {
+    return [];
+  }
+}
+
+// Resuelve el precio desde la tabla `tarifa` (id_recurso + tipo_cliente + duracion_minutos
+// + vigencia). No inventa precios: si no hay tarifa vigente, lanza un error controlado.
+export async function calcularCostoReservaPorRecurso(
+  idRecurso: number,
+  tipoCliente: 'SOCIO' | 'NO_SOCIO',
+  duracionMinutos: number
+): Promise<number> {
+  const supabase = createServerComponentClient({ cookies });
+  const hoy = obtenerFechaLocal(new Date());
+
+  const { data: tarifas, error } = await supabase
+    .from('tarifa')
+    .select('precio, vigente_desde, vigente_hasta')
+    .eq('id_recurso', idRecurso)
+    .eq('tipo_cliente', tipoCliente)
+    .eq('duracion_minutos', duracionMinutos)
+    .eq('activo', true);
+
+  if (error) {
+    throw new Error(`Error al consultar la tarifa: ${error.message}`);
+  }
+
+  const tarifaVigente = (tarifas || []).find(tarifa => {
+    const desdeOk = !tarifa.vigente_desde || tarifa.vigente_desde <= hoy;
+    const hastaOk = !tarifa.vigente_hasta || tarifa.vigente_hasta >= hoy;
+    return desdeOk && hastaOk;
+  });
+
+  if (!tarifaVigente) {
+    throw new Error(
+      `No existe una tarifa vigente para el recurso ${idRecurso} (tipo_cliente: ${tipoCliente}, duración: ${duracionMinutos} min). Configure la tarifa antes de reservar.`
+    );
+  }
+
+  return tarifaVigente.precio;
+}
+
+// Tipo de cliente para tarifas; si no está definido se asume NO_SOCIO de forma
+// conservadora (nunca se otorgan beneficios de socio sin confirmarlo explícitamente).
+async function obtenerTipoClienteParaTarifa(idCliente: number): Promise<'SOCIO' | 'NO_SOCIO'> {
+  const supabase = createServerComponentClient({ cookies });
+
+  const { data, error } = await supabase
+    .from('cliente')
+    .select('tipo_cliente')
+    .eq('id_cliente', idCliente)
+    .single();
+
+  if (error || !data?.tipo_cliente) {
+    return 'NO_SOCIO';
+  }
+
+  return data.tipo_cliente === 'SOCIO' ? 'SOCIO' : 'NO_SOCIO';
+}
+
+// Verifica disponibilidad por recurso mediante solapamiento de intervalos (no
+// igualdad de hora_inicio) e ignora reservas PENDIENTE cuyo pago ya venció.
+async function verificarDisponibilidadRecurso(
+  fecha: string,
+  horaInicio: string,
+  horaFin: string,
+  idRecurso: number,
+  idReservaExcluir?: number
+) {
+  const supabase = createServerComponentClient({ cookies });
+
+  let query = supabase
+    .from('reserva')
+    .select('id_reserva, hora_inicio, hora_fin, estado_reserva, fecha_expiracion_pago')
+    .eq('id_recurso', idRecurso)
+    .eq('fecha_reserva', fecha)
+    .neq('estado_reserva', 'cancelada');
+
+  if (idReservaExcluir) {
+    query = query.neq('id_reserva', idReservaExcluir);
+  }
+
+  const { data: reservasDelDia, error } = await query;
+
+  if (error) {
+    throw new Error(`Error al verificar disponibilidad del recurso: ${error.message}`);
+  }
+
+  const ahora = new Date();
+  const conflictos = (reservasDelDia || [])
+    .filter(reserva => reservaBloqueaRecurso(reserva, ahora))
+    .filter(reserva => haySolapamientoDeHorarios(horaInicio, horaFin, reserva.hora_inicio, reserva.hora_fin));
+
+  if (conflictos.length > 0) {
+    const detalle = conflictos
+      .map(c => `${c.hora_inicio.substring(0, 5)}-${c.hora_fin.substring(0, 5)}`)
+      .join(', ');
+    throw new Error(`El recurso ya tiene una reserva que se solapa con ese horario (${detalle}).`);
+  }
+
+  return true;
+}
+
+// Crea una reserva sobre el nuevo modelo (id_recurso + duracion_minutos).
+// IMPORTANTE (concurrencia): la verificación de disponibilidad y el insert siguen
+// sin ser atómicos (ver informe del Paso 3, sección de condiciones de carrera).
+export async function crearReservaRecurso(datos: NuevaReservaRecursoInput) {
+  const supabase = createServerComponentClient({ cookies });
+
+  if (!esDuracionValida(datos.duracion_minutos)) {
+    throw new Error(`Duración no válida: ${datos.duracion_minutos} minutos. Valores permitidos: ${DURACIONES_VALIDAS_MINUTOS.join(' o ')} minutos.`);
+  }
+
+  const horaFin = calcularHoraFinPorDuracion(datos.hora_inicio, datos.duracion_minutos);
+
+  await verificarDisponibilidadRecurso(datos.fecha_reserva, datos.hora_inicio, horaFin, datos.id_recurso);
+
+  const tipoCliente = await obtenerTipoClienteParaTarifa(datos.id_cliente);
+  const costoReserva = await calcularCostoReservaPorRecurso(datos.id_recurso, tipoCliente, datos.duracion_minutos);
+
+  const { data, error } = await supabase
+    .from('reserva')
+    .insert({
+      id_cliente: datos.id_cliente,
+      id_recurso: datos.id_recurso,
+      fecha_reserva: datos.fecha_reserva,
+      hora_inicio: datos.hora_inicio,
+      hora_fin: horaFin,
+      duracion_minutos: datos.duracion_minutos,
+      estado_reserva: 'pendiente',
+      costo_reserva: costoReserva,
+      fecha_expiracion_pago: calcularFechaExpiracionPago(5)
+    })
+    .select('id_reserva')
+    .single();
+
+  if (error) {
+    throw new Error(`Error al crear la reserva: ${error.message}`);
+  }
+
+  revalidatePath('/reservas');
+  return data.id_reserva;
+}
+
+// Actualiza una reserva del nuevo modelo, recalculando hora_fin y costo.
+export async function actualizarReservaRecurso(id: number, datos: NuevaReservaRecursoInput) {
+  const supabase = createServerComponentClient({ cookies });
+
+  if (!esDuracionValida(datos.duracion_minutos)) {
+    throw new Error(`Duración no válida: ${datos.duracion_minutos} minutos. Valores permitidos: ${DURACIONES_VALIDAS_MINUTOS.join(' o ')} minutos.`);
+  }
+
+  const horaFin = calcularHoraFinPorDuracion(datos.hora_inicio, datos.duracion_minutos);
+
+  await verificarDisponibilidadRecurso(datos.fecha_reserva, datos.hora_inicio, horaFin, datos.id_recurso, id);
+
+  const tipoCliente = await obtenerTipoClienteParaTarifa(datos.id_cliente);
+  const costoReserva = await calcularCostoReservaPorRecurso(datos.id_recurso, tipoCliente, datos.duracion_minutos);
+
+  const { error } = await supabase
+    .from('reserva')
+    .update({
+      id_cliente: datos.id_cliente,
+      id_recurso: datos.id_recurso,
+      fecha_reserva: datos.fecha_reserva,
+      hora_inicio: datos.hora_inicio,
+      hora_fin: horaFin,
+      duracion_minutos: datos.duracion_minutos,
+      costo_reserva: costoReserva
+    })
+    .eq('id_reserva', id);
+
+  if (error) {
+    throw new Error(`Error al actualizar la reserva: ${error.message}`);
+  }
+
+  revalidatePath('/reservas');
+  return true;
 }
 
 

@@ -154,7 +154,7 @@ export const ReservaDetailsModal = ({
                         <div>
                           <p className="text-sm text-gray-500">Horario:</p>
                           <p className="text-sm font-medium">
-                            {reserva.hora_inicio} - {reserva.hora_fin} ({calcularDuracion()} horas)
+                            {reserva.hora_inicio} - {reserva.hora_fin} ({reserva.duracion_minutos ? `${reserva.duracion_minutos} min` : `${calcularDuracion()} horas`})
                           </p>
                         </div>
                       </div>
@@ -171,10 +171,12 @@ export const ReservaDetailsModal = ({
                   </div>
 
                   <div className="mb-6">
-                    <h4 className="font-medium text-gray-900 mb-3">Cancha</h4>
+                    <h4 className="font-medium text-gray-900 mb-3">Recurso</h4>
                     <div className="bg-gray-50 rounded-lg p-4">
-                      <p className="text-sm font-medium">{reserva.cancha?.nombre}</p>
-                      <p className="text-sm text-gray-500">{reserva.cancha?.tipo}vs{reserva.cancha?.tipo}</p>
+                      <p className="text-sm font-medium">{reserva.recurso?.nombre || reserva.cancha?.nombre}</p>
+                      <p className="text-sm text-gray-500">
+                        {reserva.recurso ? `${reserva.recurso.tipo_recurso}${reserva.recurso.deporte ? ` \u00b7 ${reserva.recurso.deporte}` : ''}` : (reserva.cancha ? `${reserva.cancha.tipo}vs${reserva.cancha.tipo}` : '')}
+                      </p>
                     </div>
                   </div>
 

@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { type Pago } from '@/lib/usePagosRealtime';
+import { obtenerReservas } from '@/app/api/reservas/actions';
+import type { Reserva } from '@/types';
 
 // Tipo para el formulario de pago (sin campos autogenerados)
 type PagoFormData = Omit<Pago, 'id_pago' | 'fecha_pago'>;
@@ -22,6 +24,38 @@ export default function PagoModal({ isOpen, onClose, onSave, pago, title }: Pago
   
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Reservas seleccionables: pendientes + la ya asociada al pago que se está editando.
+  const [reservasDisponibles, setReservasDisponibles] = useState<Reserva[]>([]);
+  const [cargandoReservas, setCargandoReservas] = useState(false);
+  const [errorReservas, setErrorReservas] = useState('');
+
+  // Cargar reservas pendientes (más la del pago en edición, si ya no está pendiente)
+  // reutilizando obtenerReservas(), que ya resuelve cliente/recurso sin N+1 queries.
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const idReservaEnEdicion = pago?.id_reserva;
+
+    const cargarReservas = async () => {
+      setCargandoReservas(true);
+      setErrorReservas('');
+      try {
+        const todasLasReservas: Reserva[] = await obtenerReservas();
+        const seleccionables = todasLasReservas.filter(reserva =>
+          reserva.estado_reserva === 'pendiente' || reserva.id_reserva === idReservaEnEdicion
+        );
+        setReservasDisponibles(seleccionables);
+      } catch {
+        setErrorReservas('No se pudieron cargar las reservas pendientes');
+        setReservasDisponibles([]);
+      } finally {
+        setCargandoReservas(false);
+      }
+    };
+
+    cargarReservas();
+  }, [isOpen, pago]);
 
   // Resetear form cuando se abre/cierra el modal
   useEffect(() => {
@@ -75,7 +109,15 @@ export default function PagoModal({ isOpen, onClose, onSave, pago, title }: Pago
     const newErrors: Record<string, string> = {};
 
     if (!formData.id_reserva || formData.id_reserva <= 0) {
-      newErrors.id_reserva = 'El ID de reserva es requerido y debe ser válido';
+      newErrors.id_reserva = 'Debe seleccionar una reserva';
+    } else if (!pago) {
+      // Solo se valida contra la lista al crear: al editar, el select va deshabilitado.
+      const reservaElegida = reservasDisponibles.find(r => r.id_reserva === formData.id_reserva);
+      if (!reservaElegida) {
+        newErrors.id_reserva = 'La reserva seleccionada no es válida';
+      } else if (reservaElegida.estado_reserva !== 'pendiente') {
+        newErrors.id_reserva = 'La reserva seleccionada ya no está pendiente';
+      }
     }
 
     if (!formData.monto || formData.monto <= 0) {
@@ -127,6 +169,23 @@ export default function PagoModal({ isOpen, onClose, onSave, pago, title }: Pago
     }
   };
 
+  // Al elegir una reserva, autocompleta el monto con su costo_reserva ya calculado
+  // (tarifa resuelta al crear la reserva); no vuelve a calcular ningún precio.
+  const handleReservaChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const idReserva = Number(e.target.value);
+    const reservaSeleccionada = reservasDisponibles.find(r => r.id_reserva === idReserva);
+
+    setFormData(prev => ({
+      ...prev,
+      id_reserva: idReserva,
+      monto: reservaSeleccionada?.costo_reserva ? reservaSeleccionada.costo_reserva : prev.monto
+    }));
+
+    if (errors.id_reserva) {
+      setErrors(prev => ({ ...prev, id_reserva: '' }));
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -163,21 +222,43 @@ export default function PagoModal({ isOpen, onClose, onSave, pago, title }: Pago
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
                   <label htmlFor="id_reserva" className="block text-sm font-medium text-gray-700">
-                    ID de Reserva *
+                    Reserva *
                   </label>
-                  <input
-                    type="number"
+                  <select
                     id="id_reserva"
                     name="id_reserva"
                     value={formData.id_reserva || ''}
-                    onChange={handleChange}
+                    onChange={handleReservaChange}
                     className={`mt-1 block w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed ${
                       errors.id_reserva ? 'border-red-300' : 'border-gray-300'
                     }`}
-                    placeholder="Ej: 123"
-                    disabled={!!pago} // Deshabilitar si es edición
-                    autoFocus={!pago} // Auto-focus en el primer campo si es nuevo
-                  />
+                    disabled={!!pago || cargandoReservas}
+                    autoFocus={!pago}
+                  >
+                    <option value="">
+                      {cargandoReservas
+                        ? 'Cargando reservas...'
+                        : reservasDisponibles.length === 0
+                          ? 'No hay reservas pendientes'
+                          : 'Seleccione una reserva'}
+                    </option>
+                    {reservasDisponibles.map(reserva => {
+                      const nombreCliente = reserva.cliente
+                        ? `${reserva.cliente.nombre} ${reserva.cliente.apellido || ''}`.trim()
+                        : 'Cliente desconocido';
+                      const horaInicio = reserva.hora_inicio?.substring(0, 5) || '--:--';
+                      const horaFin = reserva.hora_fin?.substring(0, 5) || '--:--';
+
+                      return (
+                        <option key={reserva.id_reserva} value={reserva.id_reserva}>
+                          {`Reserva ${reserva.id_reserva} - ${nombreCliente} - ${horaInicio} - ${horaFin}`}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  {errorReservas && (
+                    <p className="mt-1 text-sm text-red-600">{errorReservas}</p>
+                  )}
                   {errors.id_reserva && (
                     <p className="mt-1 text-sm text-red-600">{errors.id_reserva}</p>
                   )}
@@ -200,6 +281,11 @@ export default function PagoModal({ isOpen, onClose, onSave, pago, title }: Pago
                     }`}
                     placeholder="0.00"
                   />
+                  {!pago && formData.id_reserva > 0 && !formData.monto && (
+                    <p className="mt-1 text-sm text-amber-600">
+                      Esta reserva no tiene un monto cargado. Completalo manualmente.
+                    </p>
+                  )}
                   {errors.monto && (
                     <p className="mt-1 text-sm text-red-600">{errors.monto}</p>
                   )}

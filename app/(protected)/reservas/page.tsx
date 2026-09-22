@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Reserva, Cliente, Cancha } from '@/types';
+import { Reserva, Cliente, Recurso, NuevaReservaRecursoInput } from '@/types';
 import { PlusIcon } from '@heroicons/react/24/outline';
 import ReservaForm from '@/components/reservas/ReservaForm';
 import ReservasList from '@/components/reservas/ReservasList';
@@ -10,20 +10,20 @@ import notifications from '@/lib/notifications';
 // Importar las acciones del servidor
 import { 
   obtenerReservas,
-  crearReserva,
-  actualizarReserva,
+  crearReservaRecurso,
+  actualizarReservaRecurso,
   eliminarReserva,
   cambiarEstadoReserva,
 
   obtenerClientesActivos,
-  obtenerCanchasDisponibles,
+  obtenerRecursosDisponibles,
 } from '@/app/api/reservas/actions';
 
 export default function ReservasPage() {
   const [reservas, setReservas] = useState<Reserva[]>([]);
   const [reservaEditando, setReservaEditando] = useState<Reserva | undefined>(undefined);
   const [clientes, setClientes] = useState<Cliente[]>([]);
-  const [canchas, setCanchas] = useState<Cancha[]>([]);
+  const [recursos, setRecursos] = useState<Recurso[]>([]);
   const [mostrarFormulario, setMostrarFormulario] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
@@ -32,8 +32,8 @@ export default function ReservasPage() {
       setErrorMessage('');
       
       try {
-        // Cargar los clientes activos, reservas y canchas
-        const [clientesData, reservasData, canchasData] = await Promise.all([
+        // Cargar los clientes activos, reservas y recursos
+        const [clientesData, reservasData, recursosData] = await Promise.all([
           obtenerClientesActivos().catch(error => {
                         setErrorMessage('Error al cargar clientes: ' + error.message);
             return [];
@@ -42,15 +42,15 @@ export default function ReservasPage() {
                         setErrorMessage('Error al cargar reservas: ' + error.message);
             return [];
           }),
-          obtenerCanchasDisponibles().catch(error => {
-                        setErrorMessage('Error al cargar canchas: ' + error.message);
+          obtenerRecursosDisponibles().catch(error => {
+                        setErrorMessage('Error al cargar recursos: ' + error.message);
             return [];
           })
         ]);
 
         setClientes(clientesData);
         setReservas(reservasData);
-        setCanchas(canchasData);
+        setRecursos(recursosData);
         
 
       } catch (error) {
@@ -62,14 +62,14 @@ export default function ReservasPage() {
     cargarDatos();
   }, [cargarDatos]);
 
-  const handleSubmitReserva = async (reserva: Omit<Reserva, 'id_reserva'>) => {
+  const handleSubmitReserva = async (datos: NuevaReservaRecursoInput) => {
     try {
       setErrorMessage('');
       
       if (reservaEditando) {
-        await actualizarReserva(reservaEditando.id_reserva, reserva);
+        await actualizarReservaRecurso(reservaEditando.id_reserva, datos);
       } else {
-        await crearReserva(reserva);
+        await crearReservaRecurso(datos);
       }
       const nuevasReservas = await obtenerReservas();
       setReservas(nuevasReservas);
@@ -112,7 +112,7 @@ export default function ReservasPage() {
         <ReservaForm
           reserva={reservaEditando}
           clientes={clientes}
-          canchas={canchas}
+          recursos={recursos}
           onSubmit={handleSubmitReserva}
           isSubmitting={false}
           onClienteCreado={handleClienteCreado}

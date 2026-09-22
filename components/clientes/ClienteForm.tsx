@@ -19,6 +19,8 @@ export default function ClienteForm({
   const [nombre, setNombre] = useState(cliente?.nombre || '');
   const [apellido, setApellido] = useState(cliente?.apellido || '');
   const [telefono, setTelefono] = useState(cliente?.telefono || '');
+  // Clientes existentes sin tipo_cliente (NULL) se muestran como NO_SOCIO por defecto.
+  const [tipoCliente, setTipoCliente] = useState<'SOCIO' | 'NO_SOCIO'>(cliente?.tipo_cliente || 'NO_SOCIO');
   const [error, setError] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -41,7 +43,8 @@ export default function ClienteForm({
       await onSubmit({
         nombre,
         apellido,
-        telefono
+        telefono,
+        tipo_cliente: tipoCliente
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ha ocurrido un error al guardar el cliente');
@@ -102,6 +105,22 @@ export default function ClienteForm({
             placeholder="+54 (11) 1234-5678"
             required
           />
+        </div>
+        
+        <div className="mb-4">
+          <label htmlFor="tipo_cliente" className="block mb-2 text-sm font-medium text-gray-700">
+            Tipo de cliente
+          </label>
+          <select
+            id="tipo_cliente"
+            value={tipoCliente}
+            onChange={(e) => setTipoCliente(e.target.value as 'SOCIO' | 'NO_SOCIO')}
+            className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+            required
+          >
+            <option value="SOCIO">Socio</option>
+            <option value="NO_SOCIO">No socio</option>
+          </select>
         </div>
         
         <div className="flex justify-end space-x-3">

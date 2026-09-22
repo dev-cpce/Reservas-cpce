@@ -1,16 +1,17 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Reserva, Cliente, Cancha } from '@/types';
+import { Reserva, Cliente, Recurso, NuevaReservaRecursoInput } from '@/types';
 import { CalendarIcon, ClockIcon, MagnifyingGlassIcon, PlusIcon, XMarkIcon } from '@heroicons/react/24/outline';
-import { obtenerReservasPorFechaYCancha } from '@/app/api/reservas/actions';
+import { obtenerReservasPorFechaYRecurso } from '@/app/api/reservas/actions';
 import { crearCliente } from '@/app/api/clientes/actions';
+import { DURACIONES_VALIDAS_MINUTOS, esDuracionValida, calcularHoraFinPorDuracion } from '@/lib/recursoDisponibilidad';
 
 interface ReservaFormProps {
   reserva?: Reserva;
   clientes: Cliente[];
-  canchas: Cancha[];
-  onSubmit: (data: Omit<Reserva, 'id_reserva'>) => Promise<void>;
+  recursos: Recurso[];
+  onSubmit: (data: NuevaReservaRecursoInput) => Promise<void>;
   onCancel: () => void;
   isSubmitting: boolean;
   onClienteCreado?: (cliente: Cliente) => void;
@@ -19,7 +20,7 @@ interface ReservaFormProps {
 export default function ReservaForm({
   reserva,
   clientes,
-  canchas,
+  recursos,
   onSubmit,
   onCancel,
   isSubmitting,
@@ -27,7 +28,7 @@ export default function ReservaForm({
 }: ReservaFormProps) {
 
   const [clienteId, setClienteId] = useState<number>(reserva?.id_cliente || 0);
-  const [canchaId, setCanchaId] = useState<number>(reserva?.id_cancha || 0);
+  const [recursoId, setRecursoId] = useState<number>(reserva?.id_recurso || 0);
   
   const [busquedaCliente, setBusquedaCliente] = useState<string>('');
   const [clientesFiltrados, setClientesFiltrados] = useState<Cliente[]>([]);
@@ -39,32 +40,7 @@ export default function ReservaForm({
   });
   const [creandoCliente, setCreandoCliente] = useState<boolean>(false);
   
-  const esCanchaDisponible = (cancha: Cancha) => {
-    const estadoReal = cancha.estado?.toLowerCase();
-    const estadoCompatibilidad = cancha.estado_cancha?.toLowerCase();
-    
-    const estadosNoDisponibles = [
-      'no disponible', 
-      'en mantenimiento', 
-      'mantenimiento',
-      'fuera de servicio',
-      'inactiva',
-      'inactivo',
-      'cerrada',
-      'cerrado'
-    ];
-    
-    if ((estadoReal && estadosNoDisponibles.includes(estadoReal)) || 
-        (estadoCompatibilidad && estadosNoDisponibles.includes(estadoCompatibilidad))) {
-      return false;
-    }
-    
-    if (!estadoReal && !estadoCompatibilidad) return true;
-    return (
-      estadoReal === 'disponible' || estadoReal === 'activa' || estadoReal === 'activo' ||
-      estadoCompatibilidad === 'disponible' || estadoCompatibilidad === 'activa' || estadoCompatibilidad === 'activo'
-    );
-  };
+  const esRecursoDisponible = (recurso: Recurso) => recurso.activo && recurso.estado === 'DISPONIBLE';
   
   useEffect(() => {
     if (!busquedaCliente.trim()) {
@@ -132,7 +108,9 @@ export default function ReservaForm({
   
   const [fecha, setFecha] = useState<string>(reserva?.fecha_reserva || reserva?.fecha || obtenerFechaLocal());
   const [horaInicio, setHoraInicio] = useState<string>(reserva?.hora_inicio || '');
-  const [horaFin, setHoraFin] = useState<string>(reserva?.hora_fin || '');
+  const [duracionMinutos, setDuracionMinutos] = useState<number>(reserva?.duracion_minutos || DURACIONES_VALIDAS_MINUTOS[0]);
+  // hora_fin ya no se elige manualmente: se deriva de hora_inicio + duracion_minutos.
+  const horaFin = horaInicio ? calcularHoraFinPorDuracion(horaInicio, duracionMinutos) : '';
   
   const generarHorarios = () => {
     const horarios = [];
@@ -143,40 +121,14 @@ export default function ReservaForm({
     return horarios;
   };
 
-  // Generar horarios de fin (incluye 00:00 del día siguiente para cualquier hora de inicio)
-  const generarHorariosFin = (horaInicioSeleccionada: string) => {
-    const horarios = [];
-    // Agregar horarios normales después de la hora de inicio
-    for (let i = 8; i <= 23; i++) {
-      const hora = i.toString().padStart(2, '0') + ':00';
-      if (hora > horaInicioSeleccionada) {
-        horarios.push(hora);
-      }
-    }
-    horarios.push('00:00');
-    return horarios;
-  };
-
-  const estadoReserva = 'pendiente';
   const [error, setError] = useState<string>('');
-  const [horarioDisponible, setHorarioDisponible] = useState<string>('');
   const [horariosOcupados, setHorariosOcupados] = useState<string[]>([]);
-  
-  useEffect(() => {
-    if (canchaId) {
-      const canchaSeleccionada = canchas.find(c => c.id_cancha === canchaId);
-      if (canchaSeleccionada) {
-        // Buscar disponibilidad_horaria con nombres flexibles
-        setHorarioDisponible(canchaSeleccionada.disponibilidad_horaria || '');
-      }
-    }
-  }, [canchaId, canchas]);
 
   useEffect(() => {
     const cargarReservasExistentes = async () => {
-      if (fecha && canchaId) {
+      if (fecha && recursoId) {
         try {
-          const reservas = await obtenerReservasPorFechaYCancha(fecha, canchaId);
+          const reservas = await obtenerReservasPorFechaYRecurso(fecha, recursoId);
           
           const ocupados = reservas.map(reserva => `${reserva.hora_inicio}-${reserva.hora_fin}`);
           setHorariosOcupados(ocupados);
@@ -187,16 +139,7 @@ export default function ReservaForm({
     };
     
     cargarReservasExistentes();
-  }, [fecha, canchaId]);
-  
-  useEffect(() => {
-    if (horaInicio) {
-      const [hora] = horaInicio.split(':').map(Number);
-      const horaFin = hora + 1;
-      const horaFinFormateada = horaFin > 23 ? '00:00' : `${horaFin.toString().padStart(2, '0')}:00`;
-      setHoraFin(horaFinFormateada);
-    }
-  }, [horaInicio]);
+  }, [fecha, recursoId]);
   
   const validarFormulario = (): boolean => {
     if (!clienteId) {
@@ -204,14 +147,14 @@ export default function ReservaForm({
       return false;
     }
     
-    if (!canchaId) {
-      setError('Debe seleccionar una cancha');
+    if (!recursoId) {
+      setError('Debe seleccionar un recurso');
       return false;
     }
     
-    const canchaSeleccionada = canchas.find(c => c.id_cancha === canchaId);
-    if (canchaSeleccionada && !esCanchaDisponible(canchaSeleccionada)) {
-      setError('La cancha seleccionada no está disponible. Por favor, seleccione otra cancha.');
+    const recursoSeleccionado = recursos.find(r => r.id_recurso === recursoId);
+    if (recursoSeleccionado && !esRecursoDisponible(recursoSeleccionado)) {
+      setError('El recurso seleccionado no está disponible. Por favor, seleccione otro.');
       return false;
     }
     
@@ -232,42 +175,14 @@ export default function ReservaForm({
       return false;
     }
     
-    if (!horaInicio || !horaFin) {
-      setError('Debe especificar hora de inicio y fin');
+    if (!horaInicio) {
+      setError('Debe especificar la hora de inicio');
       return false;
     }
     
-    if (horaFin === '00:00') {
-    } else if (horaFin <= horaInicio) {
-      setError('La hora de finalización debe ser posterior a la hora de inicio');
+    if (!esDuracionValida(duracionMinutos)) {
+      setError(`Duración no válida. Valores permitidos: ${DURACIONES_VALIDAS_MINUTOS.join(' o ')} minutos.`);
       return false;
-    }
-    if (horarioDisponible) {
-      const [horaApertura, horaCierre] = horarioDisponible.split('-');
-      
-      const convertirAMinutos = (hora: string) => {
-        const [h, m] = hora.split(':').map(Number);
-        return h * 60 + m;
-      };
-      
-      const minInicioReserva = convertirAMinutos(horaInicio);
-      const minFinReserva = convertirAMinutos(horaFin);
-      const minApertura = convertirAMinutos(horaApertura);
-      let minCierre = convertirAMinutos(horaCierre);
-      
-      if (minCierre === 0) minCierre = 24 * 60;
-      
-      let esValido = true;
-      if (minCierre > minApertura) {
-        esValido = minInicioReserva >= minApertura && minFinReserva <= minCierre;
-      } else {
-        esValido = (minInicioReserva >= minApertura) && (minFinReserva <= minCierre || minFinReserva <= 1440);
-      }
-
-      if (!esValido) {
-        setError(`El horario seleccionado está fuera del horario disponible (${horarioDisponible})`);
-        return false;
-      }
     }
     
     return true;
@@ -280,37 +195,12 @@ export default function ReservaForm({
     if (!validarFormulario()) return;
     
     try {
-      const canchaSeleccionada = canchas.find(c => c.id_cancha === canchaId);
-      let costoReserva = 0;
-      
-      if (canchaSeleccionada) {
-        try {
-          let diferenciaHoras: number;
-          
-          if (horaFin === '00:00') {
-            const inicioHora = parseInt(horaInicio.split(':')[0]);
-            diferenciaHoras = 24 - inicioHora;
-          } else {
-            const inicio = new Date(`1970-01-01T${horaInicio}:00`);
-            const fin = new Date(`1970-01-01T${horaFin}:00`);
-            const diferenciaMs = fin.getTime() - inicio.getTime();
-            diferenciaHoras = diferenciaMs / (1000 * 60 * 60);
-          }
-          
-          costoReserva = Math.round(diferenciaHoras * canchaSeleccionada.tarifa_hora * 100) / 100;
-        } catch {
-          costoReserva = 0;
-        }
-      }
-
       await onSubmit({
         id_cliente: clienteId,
-        id_cancha: canchaId,
+        id_recurso: recursoId,
         fecha_reserva: fecha,
         hora_inicio: horaInicio,
-        hora_fin: horaFin,
-        estado_reserva: estadoReserva,
-        costo_reserva: costoReserva
+        duracion_minutos: duracionMinutos
       });
     } catch (err) {
       if (err instanceof Error) {
@@ -501,39 +391,33 @@ export default function ReservaForm({
         </div>
         
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-          {/* Selección de Cancha */}
+          {/* Selección de Recurso */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Cancha
+              Recurso
             </label>
             <select 
               className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50"
-              value={canchaId || 0}
-              onChange={(e) => setCanchaId(Number(e.target.value))}
+              value={recursoId || 0}
+              onChange={(e) => setRecursoId(Number(e.target.value))}
               disabled={isSubmitting}
               required
             >
-              <option value={0}>Seleccione una cancha</option>
-              {Array.isArray(canchas) && canchas.length > 0 ? (
-                // Filtrar solo canchas disponibles
-                canchas.filter(esCanchaDisponible).map((cancha) => (
-                  <option key={cancha.id_cancha} value={cancha.id_cancha}>
-                    {cancha.nombre || `Cancha ${cancha.id_cancha}`} - Tipo: {cancha.tipo || 'N/A'} jugadores - ${cancha.tarifa_hora}/hora
+              <option value={0}>Seleccione un recurso</option>
+              {Array.isArray(recursos) && recursos.length > 0 ? (
+                recursos.filter(esRecursoDisponible).map((recurso) => (
+                  <option key={recurso.id_recurso} value={recurso.id_recurso}>
+                    {recurso.nombre} ({recurso.deporte || recurso.tipo_recurso})
                   </option>
                 ))
               ) : (
                 <option disabled>
-                  {Array.isArray(canchas) && canchas.length > 0 
-                    ? "Todas las canchas están en mantenimiento o no disponibles" 
-                    : "No hay canchas registradas"}
+                  {Array.isArray(recursos) && recursos.length > 0 
+                    ? "Todos los recursos están en mantenimiento o no disponibles" 
+                    : "No hay recursos registrados"}
                 </option>
               )}
             </select>
-            {horarioDisponible && (
-              <p className="text-sm text-gray-500 mt-1">
-                Horario disponible: {horarioDisponible}
-              </p>
-            )}
           </div>
           
           {/* Fecha de reserva */}
@@ -649,27 +533,24 @@ export default function ReservaForm({
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Hora de Fin
+                Duración
               </label>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <ClockIcon className="h-5 w-5 text-gray-400" />
-                </div>
-                <select 
-                  className="pl-10 mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50"
-                  value={horaFin}
-                  onChange={(e) => setHoraFin(e.target.value)}
-                  disabled={isSubmitting || !horaInicio}
-                  required
-                >
-                  <option value="">Seleccione hora fin</option>
-                  {horaInicio && generarHorariosFin(horaInicio).map((hora) => (
-                    <option key={hora} value={hora}>
-                      {hora} {hora === '00:00' ? '(día siguiente)' : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <select 
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50"
+                value={duracionMinutos}
+                onChange={(e) => setDuracionMinutos(Number(e.target.value))}
+                disabled={isSubmitting}
+                required
+              >
+                {DURACIONES_VALIDAS_MINUTOS.map((minutos) => (
+                  <option key={minutos} value={minutos}>{minutos} minutos</option>
+                ))}
+              </select>
+              {horaInicio && (
+                <p className="text-sm text-gray-500 mt-1">
+                  Finaliza a las {horaFin}
+                </p>
+              )}
             </div>
           </div>
           
@@ -690,60 +571,27 @@ export default function ReservaForm({
           </div>
         </div>
         
-        {/* Costo estimado */}
-        {canchaId && horaInicio && horaFin && (() => {
-          const canchaSeleccionada = canchas.find(c => c.id_cancha === canchaId);
-          if (!canchaSeleccionada) return null;
-          
-          const calcularCosto = () => {
-            try {
-              let diferenciaHoras: number;
-              
-              if (horaFin === '00:00') {
-                const inicioHora = parseInt(horaInicio.split(':')[0]);
-                diferenciaHoras = 24 - inicioHora;
-              } else {
-                const inicio = new Date(`1970-01-01T${horaInicio}:00`);
-                const fin = new Date(`1970-01-01T${horaFin}:00`);
-                const diferenciaMs = fin.getTime() - inicio.getTime();
-                diferenciaHoras = diferenciaMs / (1000 * 60 * 60);
-              }
-              
-              return Math.round(diferenciaHoras * canchaSeleccionada.tarifa_hora * 100) / 100;
-            } catch {
-              return 0;
-            }
-          };
-
-          const costoEstimado = calcularCosto();
-          const duracion = horaFin === '00:00' ? 
-            (24 - parseInt(horaInicio.split(':')[0])) :
-            (horaFin > horaInicio ? 
-              ((new Date(`1970-01-01T${horaFin}:00`).getTime() - new Date(`1970-01-01T${horaInicio}:00`).getTime()) / (1000 * 60 * 60)) : 0);
-
-          if (costoEstimado > 0) {
-            return (
-              <div className="mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <h4 className="text-sm font-medium text-blue-900 mb-2">Resumen del Costo</h4>
-                <div className="space-y-1 text-sm text-blue-800">
-                  <div className="flex justify-between">
-                    <span>Cancha: {canchaSeleccionada.nombre}</span>
-                    <span>${canchaSeleccionada.tarifa_hora}/hora</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Duración: {duracion} hora{duracion !== 1 ? 's' : ''}</span>
-                    <span>{duracion} × ${canchaSeleccionada.tarifa_hora}</span>
-                  </div>
-                  <div className="flex justify-between font-bold text-blue-900 pt-1 border-t border-blue-200">
-                    <span>Total:</span>
-                    <span>${costoEstimado.toFixed(2)}</span>
-                  </div>
-                </div>
+        {/* Resumen de la reserva: el costo definitivo se resuelve en el servidor según la tarifa vigente */}
+        {recursoId && horaInicio && (
+          <div className="mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <h4 className="text-sm font-medium text-blue-900 mb-2">Resumen de la Reserva</h4>
+            <div className="space-y-1 text-sm text-blue-800">
+              <div className="flex justify-between">
+                <span>Recurso:</span>
+                <span>{recursos.find(r => r.id_recurso === recursoId)?.nombre}</span>
               </div>
-            );
-          }
-          return null;
-        })()}
+              <div className="flex justify-between">
+                <span>Horario:</span>
+                <span>{horaInicio} - {horaFin}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Duración:</span>
+                <span>{duracionMinutos} minutos</span>
+              </div>
+            </div>
+            <p className="text-xs text-blue-700 mt-2">El costo se calculará automáticamente según la tarifa vigente para el cliente seleccionado.</p>
+          </div>
+        )}
 
         {/* Botones de acción */}
         <div className="mt-6 flex justify-end space-x-3">
