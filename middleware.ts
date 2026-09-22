@@ -11,7 +11,7 @@ export async function middleware(req: NextRequest) {
 
     const pathname = req.nextUrl.pathname
 
-    const isPublicRoute = pathname === '/login' || pathname.startsWith('/api/auth') || pathname.includes('favicon.ico')
+    const isPublicRoute = pathname === '/login' || pathname.startsWith('/api/auth') ||   pathname.startsWith('/api/whatsapp') || pathname.includes('favicon.ico')
 
 
     if (!session && !isPublicRoute) {
