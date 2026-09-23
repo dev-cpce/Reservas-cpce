@@ -2,31 +2,39 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { CalendarIcon, ClockIcon, UserGroupIcon, CurrencyDollarIcon, XMarkIcon } from '@heroicons/react/24/outline';
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import { useDashboardRealtime } from '@/lib/useRealtime';
 import { notifications } from '@/lib/notifications';
 import {
-  obtenerEstadisticasDashboard,
-  obtenerReservasPorHorario,
+  obtenerEstadisticasDashboardRecursos,
+  obtenerReservasPorHorarioRecurso,
   obtenerReservasPorDiaSemana,
-  obtenerHorariosDisponibles,
+  obtenerDisponibilidadRecursosHoy,
+  obtenerDisponibilidadSemanalRecurso,
 } from '@/app/api/reservas/actions';
 import StatCard from '@/components/StatCard';
 import CourtOccupancyChart from '@/components/charts/CourtOccupancyChart';
 import HourlyUsageChart from '@/components/charts/HourlyUsageChart';
 import WeeklyBookingsChart from '@/components/charts/WeeklyBookingsChart';
 
-import type { DashboardStats, ReservaPorHorario, ReservaPorDia, HorarioDisponible } from '@/types/dashboard';
+import type { DashboardStats, ReservaPorHorario, ReservaPorDia, RecursoHorarioDisponible, DiaDisponibilidadRecurso } from '@/types/dashboard';
+
+const formatearEstadoRecurso = (estado: string) => {
+  switch (estado) {
+    case 'DISPONIBLE': return 'Disponible';
+    case 'MANTENIMIENTO': return 'Mantenimiento';
+    case 'FUERA_SERVICIO': return 'Fuera de servicio';
+    default: return estado;
+  }
+};
 
 export default function DashboardPage() {
-  const supabase = createClientComponentClient();
   const [statsData, setStatsData] = useState<DashboardStats>({
     reservasConfirmadas: 0,
     reservasPendientes: 0,
     ingresosDiarios: 0,
     ingresosMensuales: 0,
-    canchasDisponibles: 0,
-    totalCanchas: 0,
+    recursosDisponibles: 0,
+    totalRecursos: 0,
     totalReservasMensuales: 0,
     clientesActivos: 0
   });
@@ -34,34 +42,14 @@ export default function DashboardPage() {
   const [reservasPorHorario, setReservasPorHorario] = useState<ReservaPorHorario[]>([]);
   const [reservasPorDia, setReservasPorDia] = useState<ReservaPorDia[]>([]);
 
-  const [horariosDisponibles, setHorariosDisponibles] = useState<HorarioDisponible[]>([]);
+  const [disponibilidadRecursos, setDisponibilidadRecursos] = useState<RecursoHorarioDisponible[]>([]);
   const [fechaActual, setFechaActual] = useState<string>('');
   const [horaActual, setHoraActual] = useState<string>('');
   
   // Estados del modal de disponibilidad
   const [modalAbierto, setModalAbierto] = useState(false);
-  const [canchaSeleccionada, setCanchaSeleccionada] = useState<HorarioDisponible | null>(null);
-  const [reservasSemana, setReservasSemana] = useState<{
-    fecha: string;
-    horariosDisponibles: string[];
-    horariosOcupados: string[];
-  }[]>([]);
-
-  // Consulta reservas de una cancha en fecha específica
-  const getReservasPorFecha = async (canchaId: number, fecha: string) => {
-    try {
-      const { data, error } = await supabase
-        .from('reserva')
-        .select('hora_inicio, hora_fin, estado_reserva')
-        .eq('fecha_reserva', fecha)
-        .eq('id_cancha', canchaId)
-        .in('estado_reserva', ['confirmada', 'pendiente']);
-
-      return error ? [] : data || [];
-    } catch {
-      return [];
-    }
-  };
+  const [recursoSeleccionado, setRecursoSeleccionado] = useState<RecursoHorarioDisponible | null>(null);
+  const [reservasSemana, setReservasSemana] = useState<DiaDisponibilidadRecurso[]>([]);
 
   useEffect(() => {
     const actualizarFechaHora = () => {
@@ -77,17 +65,17 @@ export default function DashboardPage() {
 
   const cargarDatos = useCallback(async () => {
     try {
-      const [estadisticas, datosPorHorario, datosPorDia, horariosData] = await Promise.all([
-        obtenerEstadisticasDashboard(),
-        obtenerReservasPorHorario(),
+      const [estadisticas, datosPorHorario, datosPorDia, disponibilidadData] = await Promise.all([
+        obtenerEstadisticasDashboardRecursos(),
+        obtenerReservasPorHorarioRecurso(),
         obtenerReservasPorDiaSemana(),
-        obtenerHorariosDisponibles()
+        obtenerDisponibilidadRecursosHoy()
       ]);
 
       setStatsData(estadisticas);
       setReservasPorHorario(datosPorHorario);
       setReservasPorDia(datosPorDia);
-      setHorariosDisponibles(horariosData);
+      setDisponibilidadRecursos(disponibilidadData);
     } catch {
       notifications.error('Error al cargar los datos del dashboard');
     }
@@ -97,7 +85,7 @@ export default function DashboardPage() {
     setTimeout(cargarDatos, 100);
   }, [cargarDatos]);
 
-  const onCanchaChange = useCallback(() => {
+  const onRecursoChange = useCallback(() => {
     setTimeout(cargarDatos, 100);
   }, [cargarDatos]);
 
@@ -110,7 +98,7 @@ export default function DashboardPage() {
   // Configurar suscripciones de Realtime
   useDashboardRealtime({
     onReservaChange,
-    onCanchaChange,
+    onRecursoChange,
     onPagoChange,
     enabled: true
   });
@@ -119,69 +107,16 @@ export default function DashboardPage() {
     cargarDatos();
   }, [cargarDatos]);
 
-  // Función para calcular rango de 7 días desde hoy
-  const calcular7Dias = () => {
-    const fechas = [];
-    const hoy = new Date();
-    
-    for (let i = 0; i < 7; i++) {
-      const fecha = new Date(hoy);
-      fecha.setDate(hoy.getDate() + i);
-      
-      const year = fecha.getFullYear();
-      const month = String(fecha.getMonth() + 1).padStart(2, '0');
-      const day = String(fecha.getDate()).padStart(2, '0');
-      const fechaStr = `${year}-${month}-${day}`;
-      
-      fechas.push(fechaStr);
-    }
-    
-    return fechas;
-  };
+  // Maneja click en tarjetas de recurso para abrir el modal de 7 días
+  const manejarClickRecurso = async (recurso: RecursoHorarioDisponible) => {
+    setRecursoSeleccionado(recurso);
 
-  // Maneja click en tarjetas de cancha para abrir modal
-  const manejarClickCancha = async (cancha: HorarioDisponible) => {
-    setCanchaSeleccionada(cancha);
-    
     try {
-      const fechas7Dias = calcular7Dias();
-      const horariosBase = Array.from({ length: 16 }, (_, index) => `${String(index + 8).padStart(2, '0')}:00`);
-      const reservasPorDia = await Promise.all(
-        fechas7Dias.map(async (fecha) => {
-          const reservasDelDia = await getReservasPorFecha(cancha.id_cancha, fecha);
-          const horariosOcupados: string[] = [];
-
-          reservasDelDia.forEach(reserva => {
-            const horaInicio = reserva.hora_inicio.substring(0, 5);
-            const horaFin = reserva.hora_fin.substring(0, 5);
-            const horaInicioNum = parseInt(horaInicio.split(':')[0]);
-            let horaFinNum = parseInt(horaFin.split(':')[0]);
-
-            if (horaFin === '00:00') {
-              horaFinNum = 24;
-            }
-
-            for (let h = horaInicioNum; h < horaFinNum; h++) {
-              const horarioOcupado = `${String(h).padStart(2, '0')}:00`;
-              if (!horariosOcupados.includes(horarioOcupado)) {
-                horariosOcupados.push(horarioOcupado);
-              }
-            }
-          });
-
-          return {
-            fecha,
-            horariosDisponibles: horariosBase.filter(horario => !horariosOcupados.includes(horario)),
-            horariosOcupados
-          };
-        })
-      );
-      
-      setReservasSemana(reservasPorDia);
+      const disponibilidadSemana = await obtenerDisponibilidadSemanalRecurso(recurso.id_recurso);
+      setReservasSemana(disponibilidadSemana);
       setModalAbierto(true);
-      
     } catch {
-      notifications.error('Error al cargar la disponibilidad de la cancha');
+      notifications.error('Error al cargar la disponibilidad del recurso');
     }
   };
 
@@ -212,8 +147,8 @@ export default function DashboardPage() {
         
         <StatCard 
           title="Disponibilidad"
-          value={`${statsData.canchasDisponibles}/${statsData.totalCanchas}`}
-          description="Canchas disponibles"
+          value={`${statsData.recursosDisponibles}/${statsData.totalRecursos}`}
+          description="Recursos disponibles"
           icon={<ClockIcon className="h-6 w-6" />}
         />
         
@@ -237,63 +172,78 @@ export default function DashboardPage() {
         
         <div className="bg-white rounded-lg shadow-md p-6">
           <CourtOccupancyChart 
-            occupied={statsData.totalCanchas - statsData.canchasDisponibles} 
-            available={statsData.canchasDisponibles} 
+            occupied={statsData.totalRecursos - statsData.recursosDisponibles} 
+            available={statsData.recursosDisponibles} 
           />
         </div>
       </div>
       
 
 
-      {/* Disponibilidad Completa de Horarios - TODAS LAS CANCHAS */}
+      {/* Disponibilidad Completa de Horarios - TODOS LOS RECURSOS */}
       <div className="bg-white rounded-lg shadow-md p-6 mb-8">
         <div className="flex justify-between items-center mb-6">
-          <h3 className="text-lg font-semibold">Estado de Canchas - [{fechaActual || 'Cargando...'}]</h3>
+          <h3 className="text-lg font-semibold">Estado de Recursos - [{fechaActual || 'Cargando...'}]</h3>
           <div className="text-sm text-gray-500">
             Actualización en tiempo real • {horaActual || 'Cargando...'}
           </div>
         </div>
         
         <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-          {horariosDisponibles.map((cancha) => (
+          {disponibilidadRecursos.map((recurso) => (
             <div 
-              key={cancha.id_cancha} 
-              onClick={() => manejarClickCancha(cancha)}
+              key={recurso.id_recurso} 
+              onClick={() => manejarClickRecurso(recurso)}
               className={`border-2 rounded-lg p-4 transition-all hover:shadow-lg cursor-pointer ${
-                cancha.canchaEnMantenimiento 
+                recurso.enMantenimiento 
                   ? 'border-orange-300 bg-orange-50 hover:bg-orange-100' 
-                  : cancha.horariosDisponibles.length > 0 
+                  : recurso.horariosDisponibles.length > 0 
                     ? 'border-green-300 bg-green-50 hover:bg-green-100' 
                     : 'border-red-300 bg-red-50 hover:bg-red-100'
               }`}
               title="Click para ver reservas de los próximos 7 días"
             >
               
-              {/* Header de la cancha */}
+              {/* Header del recurso */}
               <div className="flex justify-between items-start mb-3">
-                <div className="font-semibold text-lg text-gray-900">{cancha.nombre}</div>
+                <div className="font-semibold text-lg text-gray-900">{recurso.nombre}</div>
                 <div className={`px-2 py-1 rounded-full text-xs font-medium ${
-                  cancha.canchaEnMantenimiento 
+                  recurso.enMantenimiento 
                     ? 'bg-orange-200 text-orange-800' 
                     : 'bg-green-200 text-green-800'
                 }`}>
-                  {cancha.estadoCancha}
+                  {formatearEstadoRecurso(recurso.estado)}
                 </div>
               </div>
               
               {/* Info básica */}
               <div className="text-sm text-gray-600 mb-4 space-y-1">
-                <div><span className="font-medium">Tipo:</span> {cancha.tipo} jugadores</div>
-                <div><span className="font-medium">Tarifa:</span> ${cancha.tarifa_hora}/hora</div>
-                <div><span className="font-medium">Horario:</span> {cancha.disponibilidad_horaria}</div>
+                <div><span className="font-medium">Tipo:</span> {recurso.tipo_recurso}</div>
+                {recurso.deporte && (
+                  <div><span className="font-medium">Deporte:</span> {recurso.deporte}</div>
+                )}
+                {recurso.capacidad != null && (
+                  <div><span className="font-medium">Capacidad:</span> {recurso.capacidad}</div>
+                )}
+                <div>
+                  <span className="font-medium">Horario:</span>{' '}
+                  {recurso.horaApertura && recurso.horaCierre
+                    ? `${recurso.horaApertura.substring(0, 5)} - ${recurso.horaCierre.substring(0, 5)}`
+                    : 'Sin horario configurado para hoy'}
+                </div>
               </div>
               
-              {cancha.canchaEnMantenimiento ? (
-                /* Cancha en mantenimiento */
+              {recurso.enMantenimiento ? (
+                /* Recurso en mantenimiento o fuera de servicio */
                 <div className="text-center py-6">
                   <div className="text-3xl mb-2">🔧</div>
-                  <div className="text-sm font-medium text-orange-700 mb-1">Cancha en Mantenimiento</div>
+                  <div className="text-sm font-medium text-orange-700 mb-1">Recurso no disponible</div>
                   <div className="text-xs text-orange-600">No disponible para reservas hoy</div>
+                </div>
+              ) : !recurso.horaApertura ? (
+                <div className="text-center py-6">
+                  <div className="text-3xl mb-2">📅</div>
+                  <div className="text-sm font-medium text-gray-600">Sin horario configurado para hoy</div>
                 </div>
               ) : (
                 <>
@@ -301,12 +251,12 @@ export default function DashboardPage() {
                   <div className="mb-4">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm font-medium text-green-700">
-                        Disponibles ({cancha.horariosDisponibles.length})
+                        Disponibles ({recurso.horariosDisponibles.length})
                       </span>
                     </div>
                     <div className="flex flex-wrap gap-1 min-h-[24px]">
-                      {cancha.horariosDisponibles.length > 0 ? (
-                        cancha.horariosDisponibles.map((horario, index) => (
+                      {recurso.horariosDisponibles.length > 0 ? (
+                        recurso.horariosDisponibles.map((horario, index) => (
                           <span key={index} className="px-2 py-1 bg-green-100 text-green-800 text-xs rounded-md font-medium border border-green-200 hover:bg-green-200 transition-colors cursor-pointer" title="Disponible para reservar">
                             {horario}
                           </span>
@@ -321,13 +271,13 @@ export default function DashboardPage() {
                   <div className="mb-4">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm font-medium text-red-700">
-                        Reservados ({cancha.horariosOcupados.length})
+                        Reservados ({recurso.horariosOcupados.length})
                       </span>
                     </div>
                     <div className="flex flex-wrap gap-1 min-h-[24px]">
-                      {cancha.horariosOcupados.length > 0 ? (
-                        cancha.horariosOcupados.map((horario, index) => (
-                          <span key={index} className="px-2 py-1 bg-red-100 text-red-700 text-xs rounded-md border border-red-200" title="Ocupado por reserva">
+                      {recurso.horariosOcupados.length > 0 ? (
+                        recurso.horariosOcupados.map((horario, index) => (
+                          <span key={index} className="px-2 py-1 bg-red-100 text-red-700 text-xs rounded-md border border-red-200" title="Ocupado por reserva o bloqueo">
                             {horario}
                           </span>
                         ))
@@ -345,15 +295,15 @@ export default function DashboardPage() {
               <div className="mt-4 pt-3 border-t border-gray-200">
                 <div className="grid grid-cols-3 gap-2 text-center text-xs">
                   <div className="bg-green-100 rounded p-1">
-                    <div className="font-bold text-green-800">{cancha.horariosDisponibles?.length || 0}</div>
+                    <div className="font-bold text-green-800">{recurso.horariosDisponibles?.length || 0}</div>
                     <div className="text-green-600">Libres</div>
                   </div>
                   <div className="bg-red-100 rounded p-1">
-                    <div className="font-bold text-red-800">{cancha.horariosOcupados?.length || 0}</div>
+                    <div className="font-bold text-red-800">{recurso.horariosOcupados?.length || 0}</div>
                     <div className="text-red-600">Ocupados</div>
                   </div>
                   <div className="bg-gray-100 rounded p-1">
-                    <div className="font-bold text-gray-700">{cancha.totalHorariosHoy || 16}</div>
+                    <div className="font-bold text-gray-700">{recurso.totalHorariosHoy || 0}</div>
                     <div className="text-gray-600">Total</div>
                   </div>
                 </div>
@@ -362,11 +312,11 @@ export default function DashboardPage() {
           ))}
         </div>
         
-        {horariosDisponibles.length === 0 && (
+        {disponibilidadRecursos.length === 0 && (
           <div className="text-center py-12 text-gray-500">
             <div className="text-4xl mb-4">🏟️</div>
-            <div className="text-lg font-semibold mb-2">No hay canchas configuradas</div>
-            <div className="text-sm">Agrega canchas al sistema para ver su disponibilidad</div>
+            <div className="text-lg font-semibold mb-2">No hay recursos configurados</div>
+            <div className="text-sm">Agrega recursos al sistema para ver su disponibilidad</div>
           </div>
         )}
         
@@ -380,28 +330,28 @@ export default function DashboardPage() {
             </div>
             <div className="flex items-center gap-1">
               <span className="w-3 h-3 bg-red-100 border border-red-200 rounded"></span>
-              <span>Ocupado por reserva</span>
+              <span>Ocupado por reserva o bloqueo</span>
             </div>
             <div className="flex items-center gap-1">
               <span className="w-3 h-3 bg-orange-100 border border-orange-200 rounded"></span>
-              <span>Cancha en mantenimiento</span>
+              <span>Recurso en mantenimiento</span>
             </div>
           </div>
         </div>
       </div>
 
       {/* Modal de Vista Semanal */}
-      {modalAbierto && canchaSeleccionada && (
+      {modalAbierto && recursoSeleccionado && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg shadow-xl max-w-6xl w-full max-h-[90vh] overflow-auto">
             {/* Header del modal */}
             <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex justify-between items-center">
               <div>
                 <h2 className="text-xl font-semibold text-gray-900">
-                  {canchaSeleccionada.nombre} - Reservas de los próximos 7 días
+                  {recursoSeleccionado.nombre} - Reservas de los próximos 7 días
                 </h2>
                 <p className="text-sm text-gray-600 mt-1">
-                  Tipo: {canchaSeleccionada.tipo} • Tarifa: ${canchaSeleccionada.tarifa_hora.toLocaleString()}/hora
+                  Tipo: {recursoSeleccionado.tipo_recurso}{recursoSeleccionado.deporte ? ` • Deporte: ${recursoSeleccionado.deporte}` : ''}
                 </p>
               </div>
               <button
@@ -428,6 +378,8 @@ export default function DashboardPage() {
                     year: 'numeric' 
                   });
 
+                  const slotsDelDia = [...dia.horariosDisponibles, ...dia.horariosOcupados].sort();
+
                   return (
                     <div 
                       key={dia.fecha} 
@@ -441,42 +393,40 @@ export default function DashboardPage() {
                           {esHoy && <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">HOY</span>}
                         </h3>
                         <div className="text-sm text-gray-600">
+                          {dia.horaApertura && dia.horaCierre
+                            ? `${dia.horaApertura.substring(0, 5)} - ${dia.horaCierre.substring(0, 5)} • `
+                            : ''}
                           {dia.horariosDisponibles.length} libres • {dia.horariosOcupados.length} ocupados
                         </div>
                       </div>
 
                       {/* Grid de horarios */}
-                      <div className="grid grid-cols-8 md:grid-cols-12 lg:grid-cols-16 gap-1">
-                        {/* Generar todos los horarios del día (8:00 a 23:00) */}
-                        {Array.from({ length: 16 }, (_, i) => {
-                          const hora = 8 + i;
-                          const horarioStr = `${hora.toString().padStart(2, '0')}:00`;
-                          const estaDisponible = dia.horariosDisponibles.includes(horarioStr);
-                          const estaOcupado = dia.horariosOcupados.includes(horarioStr);
-                          
-                          return (
-                            <div
-                              key={horarioStr}
-                              className={`text-xs px-2 py-1 rounded text-center font-medium transition-colors ${
-                                estaOcupado
-                                  ? 'bg-red-500 text-white border-2 border-red-600 shadow-md'
-                                  : estaDisponible
-                                  ? 'bg-green-100 text-green-800 border border-green-200'
-                                  : 'bg-gray-100 text-gray-600 border border-gray-200'
-                              }`}
-                              title={
-                                estaOcupado 
-                                  ? `Ocupado - ${horarioStr}` 
-                                  : estaDisponible 
-                                  ? `Disponible - ${horarioStr}` 
-                                  : `No disponible - ${horarioStr}`
-                              }
-                            >
-                              {horarioStr}
-                            </div>
-                          );
-                        })}
-                      </div>
+                      {slotsDelDia.length > 0 ? (
+                        <div className="grid grid-cols-6 md:grid-cols-8 lg:grid-cols-12 gap-1">
+                          {slotsDelDia.map((horarioStr) => {
+                            const estaDisponible = dia.horariosDisponibles.includes(horarioStr);
+                            const estaOcupado = dia.horariosOcupados.includes(horarioStr);
+
+                            return (
+                              <div
+                                key={horarioStr}
+                                className={`text-xs px-2 py-1 rounded text-center font-medium transition-colors ${
+                                  estaOcupado
+                                    ? 'bg-red-500 text-white border-2 border-red-600 shadow-md'
+                                    : estaDisponible
+                                    ? 'bg-green-100 text-green-800 border border-green-200'
+                                    : 'bg-gray-100 text-gray-600 border border-gray-200'
+                                }`}
+                                title={estaOcupado ? `Ocupado - ${horarioStr}` : `Disponible - ${horarioStr}`}
+                              >
+                                {horarioStr}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-gray-500 italic py-2">Sin horario configurado para este día</div>
+                      )}
                     </div>
                   );
                 })}
@@ -493,10 +443,6 @@ export default function DashboardPage() {
                   <div className="flex items-center gap-1">
                     <span className="w-3 h-3 bg-red-500 border-2 border-red-600 rounded"></span>
                     <span className="font-medium">Ocupado</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <span className="w-3 h-3 bg-gray-100 border border-gray-200 rounded"></span>
-                    <span>No disponible</span>
                   </div>
                 </div>
               </div>

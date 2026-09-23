@@ -6,7 +6,7 @@ import {
   REALTIME_POSTGRES_CHANGES_LISTEN_EVENT
 } from '@supabase/supabase-js';
 
-type TablaSupabase = 'reserva' | 'cancha' | 'cliente' | 'pago';
+type TablaSupabase = 'reserva' | 'cancha' | 'recurso' | 'cliente' | 'pago';
 type RealtimePayload = RealtimePostgresChangesPayload<Record<string, unknown>>;
 
 interface UseRealtimeOptions {
@@ -22,6 +22,7 @@ interface UseRealtimeOptions {
 interface UseDashboardRealtimeOptions {
   onReservaChange?: () => void;
   onCanchaChange?: () => void;
+  onRecursoChange?: () => void;
   onClienteChange?: () => void;
   onPagoChange?: () => void;
   enabled?: boolean;
@@ -466,6 +467,16 @@ export const useRealtimeCanchas = (onUpdate?: (payload: RealtimePayload) => void
   });
 };
 
+// Recurso: reemplaza a useRealtimeCanchas para el Dashboard migrado (esta se mantiene intacta).
+export const useRealtimeRecursos = (onUpdate?: (payload: RealtimePayload) => void) => {
+  return useRealtimeSubscription({
+    tabla: 'recurso',
+    onInsert: onUpdate,
+    onUpdate: onUpdate,
+    onDelete: onUpdate
+  });
+};
+
 export const useRealtimeClientes = (onUpdate?: (payload: RealtimePayload) => void) => {
   return useRealtimeSubscription({
     tabla: 'cliente',
@@ -487,7 +498,7 @@ export const useRealtimePagos = (onUpdate?: (payload: RealtimePayload) => void) 
 
 
 export const useDashboardRealtime = (options: UseDashboardRealtimeOptions) => {
-  const { onReservaChange, onCanchaChange, onClienteChange, onPagoChange, enabled = true } = options;
+  const { onReservaChange, onCanchaChange, onRecursoChange, onClienteChange, onPagoChange, enabled = true } = options;
 
   const reservaSubscription = useRealtimeReservas(onReservaChange ? () => {
     setTimeout(() => onReservaChange(), 50);
@@ -495,6 +506,10 @@ export const useDashboardRealtime = (options: UseDashboardRealtimeOptions) => {
 
   const canchaSubscription = useRealtimeCanchas(onCanchaChange ? () => {
     setTimeout(() => onCanchaChange(), 50);
+  } : undefined);
+
+  const recursoSubscription = useRealtimeRecursos(onRecursoChange ? () => {
+    setTimeout(() => onRecursoChange(), 50);
   } : undefined);
 
   const clienteSubscription = useRealtimeClientes(onClienteChange ? () => {
@@ -508,6 +523,7 @@ export const useDashboardRealtime = (options: UseDashboardRealtimeOptions) => {
   const isConnected = enabled && (
     reservaSubscription.isConnected && 
     canchaSubscription.isConnected &&
+    recursoSubscription.isConnected &&
     clienteSubscription.isConnected &&
     pagoSubscription.isConnected
   );
@@ -515,6 +531,7 @@ export const useDashboardRealtime = (options: UseDashboardRealtimeOptions) => {
   const errors = [
     reservaSubscription.error, 
     canchaSubscription.error,
+    recursoSubscription.error,
     clienteSubscription.error,
     pagoSubscription.error
   ].filter(Boolean);
@@ -525,24 +542,28 @@ export const useDashboardRealtime = (options: UseDashboardRealtimeOptions) => {
     connections: {
       reservas: reservaSubscription.isConnected,
       canchas: canchaSubscription.isConnected,
+      recursos: recursoSubscription.isConnected,
       clientes: clienteSubscription.isConnected,
       pagos: pagoSubscription.isConnected,
     },
     reconnectAttempts: {
       reservas: reservaSubscription.reconnectAttempts,
       canchas: canchaSubscription.reconnectAttempts,
+      recursos: recursoSubscription.reconnectAttempts,
       clientes: clienteSubscription.reconnectAttempts,
       pagos: pagoSubscription.reconnectAttempts,
     },
     disconnect: () => {
       reservaSubscription.disconnect();
       canchaSubscription.disconnect();
+      recursoSubscription.disconnect();
       clienteSubscription.disconnect();
       pagoSubscription.disconnect();
     },
     reconnect: () => {
       reservaSubscription.reconnect();
       canchaSubscription.reconnect();
+      recursoSubscription.reconnect();
       clienteSubscription.reconnect();
       pagoSubscription.reconnect();
     }

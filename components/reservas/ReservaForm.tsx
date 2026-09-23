@@ -3,9 +3,9 @@
 import { useState, useEffect } from 'react';
 import { Reserva, Cliente, Recurso, NuevaReservaRecursoInput } from '@/types';
 import { CalendarIcon, ClockIcon, MagnifyingGlassIcon, PlusIcon, XMarkIcon } from '@heroicons/react/24/outline';
-import { obtenerReservasPorFechaYRecurso } from '@/app/api/reservas/actions';
+import { obtenerReservasPorFechaYRecurso, obtenerHorarioRecurso, obtenerBloqueosActivosRecurso } from '@/app/api/reservas/actions';
 import { crearCliente } from '@/app/api/clientes/actions';
-import { DURACIONES_VALIDAS_MINUTOS, esDuracionValida, calcularHoraFinPorDuracion } from '@/lib/recursoDisponibilidad';
+import { DURACIONES_VALIDAS_MINUTOS, esDuracionValida, calcularHoraFinPorDuracion, haySolapamientoDeHorarios, horaAMinutos } from '@/lib/recursoDisponibilidad';
 
 interface ReservaFormProps {
   reserva?: Reserva;
@@ -112,25 +112,63 @@ export default function ReservaForm({
   // hora_fin ya no se elige manualmente: se deriva de hora_inicio + duracion_minutos.
   const horaFin = horaInicio ? calcularHoraFinPorDuracion(horaInicio, duracionMinutos) : '';
   
-  const generarHorarios = () => {
-    const horarios = [];
-    for (let i = 8; i <= 23; i++) {
-      const hora = i.toString().padStart(2, '0') + ':00';
-      horarios.push(hora);
+  // Genera slots de 30 min entre apertura y cierre que alcancen a completar la duración elegida.
+  const generarHorarios = (horaApertura: string, horaCierre: string, duracion: number) => {
+    const horarios: string[] = [];
+    const aperturaMin = horaAMinutos(horaApertura);
+    const cierreMin = horaAMinutos(horaCierre);
+
+    for (let minuto = aperturaMin; minuto + duracion <= cierreMin; minuto += 30) {
+      const hh = Math.floor(minuto / 60).toString().padStart(2, '0');
+      const mm = (minuto % 60).toString().padStart(2, '0');
+      horarios.push(`${hh}:${mm}`);
     }
+
     return horarios;
   };
 
   const [error, setError] = useState<string>('');
   const [horariosOcupados, setHorariosOcupados] = useState<string[]>([]);
+  const [horarioRecurso, setHorarioRecurso] = useState<{ hora_apertura: string; hora_cierre: string } | null>(null);
+  const [cargandoHorario, setCargandoHorario] = useState<boolean>(false);
+
+  // Horario de apertura/cierre según el recurso y el día de semana de la fecha elegida.
+  useEffect(() => {
+    const cargarHorarioRecurso = async () => {
+      if (!recursoId || !fecha) {
+        setHorarioRecurso(null);
+        return;
+      }
+
+      setCargandoHorario(true);
+      try {
+        const [año, mes, dia] = fecha.split('-').map(Number);
+        const diaSemana = new Date(año, mes - 1, dia).getDay();
+        const horario = await obtenerHorarioRecurso(recursoId, diaSemana);
+        setHorarioRecurso(horario);
+      } catch {
+        setHorarioRecurso(null);
+      } finally {
+        setCargandoHorario(false);
+      }
+    };
+
+    cargarHorarioRecurso();
+  }, [recursoId, fecha]);
 
   useEffect(() => {
     const cargarReservasExistentes = async () => {
       if (fecha && recursoId) {
         try {
-          const reservas = await obtenerReservasPorFechaYRecurso(fecha, recursoId);
-          
-          const ocupados = reservas.map(reserva => `${reserva.hora_inicio}-${reserva.hora_fin}`);
+          const [reservas, bloqueos] = await Promise.all([
+            obtenerReservasPorFechaYRecurso(fecha, recursoId),
+            obtenerBloqueosActivosRecurso(fecha, recursoId)
+          ]);
+
+          const ocupados = [
+            ...reservas.map(reserva => `${reserva.hora_inicio}-${reserva.hora_fin}`),
+            ...bloqueos.map(bloqueo => `${bloqueo.hora_inicio}-${bloqueo.hora_fin}`)
+          ];
           setHorariosOcupados(ocupados);
         } catch {
           // Error silencioso
@@ -212,6 +250,9 @@ export default function ReservaForm({
   };
   
   const fechaMinima = obtenerFechaLocal();
+  const horariosDisponiblesRecurso = horarioRecurso
+    ? generarHorarios(horarioRecurso.hora_apertura, horarioRecurso.hora_cierre, duracionMinutos)
+    : [];
 
   return (
     <div className="bg-white rounded-lg shadow p-6">
@@ -458,28 +499,23 @@ export default function ReservaForm({
                   disabled={isSubmitting}
                   required
                 >
-                  <option value="">Seleccione hora</option>
-                  {generarHorarios().map((hora) => {
-                    const normalizarHora = (h: string) => {
-                      if (h?.includes(':')) {
-                        const partes = h.split(':');
-                        return `${partes[0]}:${partes[1]}`;
-                      }
-                      return h;
-                    };
+                  <option value="">
+                    {cargandoHorario
+                      ? 'Cargando horario...'
+                      : !recursoId
+                        ? 'Seleccione un recurso primero'
+                        : !horarioRecurso
+                          ? 'Sin horario configurado para este día'
+                          : horariosDisponiblesRecurso.length === 0
+                            ? 'Sin horarios disponibles para esta duración'
+                            : 'Seleccione hora'}
+                  </option>
+                  {horariosDisponiblesRecurso.map((hora) => {
+                    const finHoraCandidata = calcularHoraFinPorDuracion(hora, duracionMinutos);
 
                     const estaOcupado = horariosOcupados.some(horario => {
                       const [inicioOcupado, finOcupado] = horario.split('-');
-                      const inicioOcupadoNorm = normalizarHora(inicioOcupado);
-                      const finOcupadoNorm = normalizarHora(finOcupado);
-                      
-                      const horaActual = parseInt(hora.split(':')[0]);
-                      const horaInicioOcupado = parseInt(inicioOcupadoNorm.split(':')[0]);
-                      let horaFinOcupado = parseInt(finOcupadoNorm.split(':')[0]);
-                      
-                      if (horaFinOcupado === 0) horaFinOcupado = 24;
-                      
-                      return horaActual >= horaInicioOcupado && horaActual < horaFinOcupado;
+                      return haySolapamientoDeHorarios(hora, finHoraCandidata, inicioOcupado, finOcupado);
                     });
 
                     const horaYaPaso = (() => {

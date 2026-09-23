@@ -9,12 +9,14 @@ import {
     CalendarDaysIcon, 
     UserGroupIcon, 
     CreditCardIcon,
+    NoSymbolIcon,
     ArrowRightOnRectangleIcon
 } from '@heroicons/react/24/outline';
 
 const navigation = [
     { name: 'Inicio', href: '/dashboard', icon: HomeIcon },
-    { name: 'Canchas', href: '/canchas', icon: TableCellsIcon },
+    { name: 'Recursos', href: '/recursos', icon: TableCellsIcon },
+    { name: 'Bloqueos', href: '/bloqueos', icon: NoSymbolIcon },
     { name: 'Reservas', href: '/reservas', icon: CalendarDaysIcon },
     { name: 'Clientes', href: '/clientes', icon: UserGroupIcon },
     { name: 'Pagos', href: '/pagos', icon: CreditCardIcon }

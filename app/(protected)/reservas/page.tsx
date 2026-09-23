@@ -6,6 +6,7 @@ import { PlusIcon } from '@heroicons/react/24/outline';
 import ReservaForm from '@/components/reservas/ReservaForm';
 import ReservasList from '@/components/reservas/ReservasList';
 import notifications from '@/lib/notifications';
+import { useRealtimeReservas } from '@/lib/useRealtime';
 
 // Importar las acciones del servidor
 import { 
@@ -61,6 +62,12 @@ export default function ReservasPage() {
   useEffect(() => {
     cargarDatos();
   }, [cargarDatos]);
+
+  // Refresca la lista ante cualquier INSERT/UPDATE/DELETE en `reserva` (incluye
+  // cambios externos a esta página, como la cancelación automática por vencimiento).
+  useRealtimeReservas(useCallback(() => {
+    setTimeout(cargarDatos, 100);
+  }, [cargarDatos]));
 
   const handleSubmitReserva = async (datos: NuevaReservaRecursoInput) => {
     try {

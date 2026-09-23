@@ -15,7 +15,7 @@ export default function CourtOccupancyChart({ occupied, available }: CourtOccupa
     labels: ['Fuera de servicio', 'Disponibles'],
     datasets: [
       {
-        label: 'Canchas',
+        label: 'Recursos',
         data: [occupied, available],
         backgroundColor: [
           'rgba(255, 99, 132, 0.7)',
@@ -39,7 +39,7 @@ export default function CourtOccupancyChart({ occupied, available }: CourtOccupa
       },
       title: {
         display: true,
-        text: 'Disponibilidad de Canchas',
+        text: 'Disponibilidad de Recursos',
         font: {
           size: 16,
         },

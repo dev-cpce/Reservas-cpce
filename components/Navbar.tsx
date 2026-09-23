@@ -38,6 +38,8 @@ export default function Navbar({ title }: NavbarProps) {
     
     if (pathname.includes('/dashboard')) return 'Panel del Control';
     if (pathname.includes('/canchas')) return 'Gestión de Canchas';
+    if (pathname.includes('/recursos')) return 'Gestión de Recursos';
+    if (pathname.includes('/bloqueos')) return 'Gestión de Bloqueos';
     if (pathname.includes('/reservas')) return 'Gestión de Reservas';
     if (pathname.includes('/clientes')) return 'Gestión de Clientes';
     if (pathname.includes('/pagos')) return 'Gestión de Pagos';

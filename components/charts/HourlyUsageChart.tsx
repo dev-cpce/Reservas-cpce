@@ -10,10 +10,11 @@ interface HourlyUsageChartProps {
 }
 
 export default function HourlyUsageChart({ data: chartData = [] }: HourlyUsageChartProps) {
-  // Generar horarios desde 8:00 hasta 23:00
+  // Generar horarios desde 08:00 hasta 23:30 en pasos de 30 min (slots del nuevo modelo de recurso)
   const allHours = [];
   for (let i = 8; i <= 23; i++) {
     allHours.push(`${i.toString().padStart(2, '0')}:00`);
+    allHours.push(`${i.toString().padStart(2, '0')}:30`);
   }
   
   // Mapear datos reales a los horarios

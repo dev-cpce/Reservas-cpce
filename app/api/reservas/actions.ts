@@ -12,7 +12,8 @@ import {
   calcularHoraFinPorDuracion,
   haySolapamientoDeHorarios,
   reservaBloqueaRecurso,
-  calcularFechaExpiracionPago
+  calcularFechaExpiracionPago,
+  horaAMinutos
 } from '@/lib/recursoDisponibilidad';
 
 function obtenerFechaLocal(fecha: Date): string {
@@ -1398,6 +1399,53 @@ export async function obtenerReservasPorFechaYRecurso(fecha: string, idRecurso: 
   }
 }
 
+// Horario de apertura/cierre del recurso para un día de la semana (0=domingo..6=sábado).
+// Reemplaza el rango fijo hardcodeado del formulario de reservas por `recurso_horario`.
+export async function obtenerHorarioRecurso(idRecurso: number, diaSemana: number) {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+
+    const { data, error } = await supabase
+      .from('recurso_horario')
+      .select('hora_apertura, hora_cierre')
+      .eq('id_recurso', idRecurso)
+      .eq('dia_semana', diaSemana)
+      .eq('activo', true)
+      .maybeSingle();
+
+    if (error) {
+      return null;
+    }
+
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+// Bloqueos activos de un recurso en una fecha (mantenimiento, feriados, etc.).
+// Se comparan igual que las reservas: mismo formato hora_inicio/hora_fin.
+export async function obtenerBloqueosActivosRecurso(fecha: string, idRecurso: number) {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+
+    const { data, error } = await supabase
+      .from('recurso_bloqueo')
+      .select('hora_inicio, hora_fin')
+      .eq('id_recurso', idRecurso)
+      .eq('fecha', fecha)
+      .eq('activo', true);
+
+    if (error) {
+      return [];
+    }
+
+    return data || [];
+  } catch {
+    return [];
+  }
+}
+
 // Resuelve el precio desde la tabla `tarifa` (id_recurso + tipo_cliente + duracion_minutos
 // + vigencia). No inventa precios: si no hay tarifa vigente, lanza un error controlado.
 export async function calcularCostoReservaPorRecurso(
@@ -1493,12 +1541,24 @@ async function verificarDisponibilidadRecurso(
     throw new Error(`El recurso ya tiene una reserva que se solapa con ese horario (${detalle}).`);
   }
 
+  const bloqueos = await obtenerBloqueosActivosRecurso(fecha, idRecurso);
+  const bloqueosEnConflicto = bloqueos.filter(bloqueo =>
+    haySolapamientoDeHorarios(horaInicio, horaFin, bloqueo.hora_inicio, bloqueo.hora_fin)
+  );
+
+  if (bloqueosEnConflicto.length > 0) {
+    const detalle = bloqueosEnConflicto
+      .map(b => `${b.hora_inicio.substring(0, 5)}-${b.hora_fin.substring(0, 5)}`)
+      .join(', ');
+    throw new Error(`El recurso tiene un bloqueo que se solapa con ese horario (${detalle}).`);
+  }
+
   return true;
 }
 
 // Crea una reserva sobre el nuevo modelo (id_recurso + duracion_minutos).
-// IMPORTANTE (concurrencia): la verificación de disponibilidad y el insert siguen
-// sin ser atómicos (ver informe del Paso 3, sección de condiciones de carrera).
+// La verificación de solapamiento/bloqueos y el insert ahora son atómicos dentro
+// del RPC `crear_reserva_recurso` (advisory lock transaccional en Postgres).
 export async function crearReservaRecurso(datos: NuevaReservaRecursoInput) {
   const supabase = createServerComponentClient({ cookies });
 
@@ -1508,33 +1568,36 @@ export async function crearReservaRecurso(datos: NuevaReservaRecursoInput) {
 
   const horaFin = calcularHoraFinPorDuracion(datos.hora_inicio, datos.duracion_minutos);
 
-  await verificarDisponibilidadRecurso(datos.fecha_reserva, datos.hora_inicio, horaFin, datos.id_recurso);
-
   const tipoCliente = await obtenerTipoClienteParaTarifa(datos.id_cliente);
   const costoReserva = await calcularCostoReservaPorRecurso(datos.id_recurso, tipoCliente, datos.duracion_minutos);
 
-  const { data, error } = await supabase
-    .from('reserva')
-    .insert({
-      id_cliente: datos.id_cliente,
-      id_recurso: datos.id_recurso,
-      fecha_reserva: datos.fecha_reserva,
-      hora_inicio: datos.hora_inicio,
-      hora_fin: horaFin,
-      duracion_minutos: datos.duracion_minutos,
-      estado_reserva: 'pendiente',
-      costo_reserva: costoReserva,
-      fecha_expiracion_pago: calcularFechaExpiracionPago(5)
-    })
-    .select('id_reserva')
-    .single();
+  const { data, error } = await supabase.rpc('crear_reserva_recurso', {
+    p_id_cliente: datos.id_cliente,
+    p_id_recurso: datos.id_recurso,
+    p_fecha_reserva: datos.fecha_reserva,
+    p_hora_inicio: datos.hora_inicio,
+    p_hora_fin: horaFin,
+    p_duracion_minutos: datos.duracion_minutos,
+    p_costo_reserva: costoReserva
+  });
 
   if (error) {
     throw new Error(`Error al crear la reserva: ${error.message}`);
   }
 
+  const resultado = data as {
+    success: boolean;
+    id_reserva?: number;
+    error_code?: 'DURACION_INVALIDA' | 'HORARIO_INVALIDO' | 'RECURSO_NO_DISPONIBLE' | 'CONFLICTO_RESERVA' | 'CONFLICTO_BLOQUEO';
+    message?: string;
+  } | null;
+
+  if (!resultado?.success) {
+    throw new Error(resultado?.message || `No se pudo crear la reserva (${resultado?.error_code || 'ERROR_DESCONOCIDO'}).`);
+  }
+
   revalidatePath('/reservas');
-  return data.id_reserva;
+  return resultado.id_reserva as number;
 }
 
 // Actualiza una reserva del nuevo modelo, recalculando hora_fin y costo.
@@ -1571,6 +1634,341 @@ export async function actualizarReservaRecurso(id: number, datos: NuevaReservaRe
 
   revalidatePath('/reservas');
   return true;
+}
+
+// ============================================================================
+// DASHBOARD (modelo recurso): funciones nuevas para el Dashboard principal.
+// Reemplazan, solo en el Dashboard, a las legacy basadas en `cancha`
+// (obtenerEstadisticasDashboard, obtenerHorariosDisponibles, obtenerReservasPorHorario).
+// Esas funciones legacy NO se modifican ni se eliminan.
+// ============================================================================
+
+function generarSlotsDeMediaHora(horaApertura: string, horaCierre: string): string[] {
+  const slots: string[] = [];
+  const aperturaMin = horaAMinutos(horaApertura);
+  const cierreMin = horaAMinutos(horaCierre);
+
+  for (let minuto = aperturaMin; minuto + 30 <= cierreMin; minuto += 30) {
+    const hh = Math.floor(minuto / 60).toString().padStart(2, '0');
+    const mm = (minuto % 60).toString().padStart(2, '0');
+    slots.push(`${hh}:${mm}`);
+  }
+
+  return slots;
+}
+
+// KPIs del dashboard usando `recurso` en lugar de `cancha` para disponibilidad.
+export async function obtenerEstadisticasDashboardRecursos() {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+
+    const ahoraUTC = new Date();
+    const hoy = new Date(ahoraUTC.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
+    const fechaHoy = obtenerFechaLocal(hoy);
+
+    const inicioDelMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+    const finDelMes = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
+    const inicioMesStr = obtenerFechaLocal(inicioDelMes);
+    const finMesStr = obtenerFechaLocal(finDelMes);
+
+    const { data: reservasConfirmadas } = await supabase
+      .from('reserva')
+      .select('id_reserva')
+      .eq('estado_reserva', 'confirmada')
+      .eq('fecha_reserva', fechaHoy);
+
+    const { data: reservasPendientes } = await supabase
+      .from('reserva')
+      .select('id_reserva')
+      .eq('estado_reserva', 'pendiente')
+      .eq('fecha_reserva', fechaHoy);
+
+    const { data: pagosHoy } = await supabase
+      .from('pago')
+      .select('monto, fecha_pago')
+      .eq('estado_pago', 'aprobado');
+
+    const ingresosDiarios = (pagosHoy || []).filter(pago => {
+      if (!pago.fecha_pago) return false;
+      try {
+        const fecha = new Date(pago.fecha_pago);
+        if (isNaN(fecha.getTime())) return false;
+        const fechaPagoBuenosAires = new Intl.DateTimeFormat('sv-SE', {
+          timeZone: 'America/Argentina/Buenos_Aires', year: 'numeric', month: '2-digit', day: '2-digit'
+        }).format(fecha);
+        return fechaPagoBuenosAires === fechaHoy;
+      } catch {
+        return false;
+      }
+    }).reduce((total, pago) => total + (pago.monto || 0), 0);
+
+    const { data: reservasMensuales } = await supabase
+      .from('reserva')
+      .select('fecha_reserva')
+      .gte('fecha_reserva', inicioMesStr)
+      .lte('fecha_reserva', finMesStr)
+      .neq('estado_reserva', 'cancelada');
+
+    const { data: pagosMensuales } = await supabase
+      .from('pago')
+      .select('monto, fecha_pago')
+      .eq('estado_pago', 'aprobado');
+
+    const ingresosMensuales = (pagosMensuales || []).filter(pago => {
+      if (!pago.fecha_pago) return false;
+      try {
+        const fecha = new Date(pago.fecha_pago);
+        if (isNaN(fecha.getTime())) return false;
+        const fechaPagoBuenosAires = new Intl.DateTimeFormat('sv-SE', {
+          timeZone: 'America/Argentina/Buenos_Aires', year: 'numeric', month: '2-digit', day: '2-digit'
+        }).format(fecha);
+        return fechaPagoBuenosAires >= inicioMesStr && fechaPagoBuenosAires <= finMesStr;
+      } catch {
+        return false;
+      }
+    }).reduce((total, pago) => total + (pago.monto || 0), 0);
+
+    const { data: recursos } = await supabase
+      .from('recurso')
+      .select('id_recurso, estado')
+      .eq('activo', true);
+
+    const recursosDisponibles = (recursos || []).filter(r => r.estado === 'DISPONIBLE').length;
+
+    const { data: clientesActivos } = await supabase
+      .from('reserva')
+      .select('id_cliente')
+      .gte('fecha_reserva', inicioMesStr)
+      .lte('fecha_reserva', finMesStr)
+      .neq('estado_reserva', 'cancelada');
+
+    const clientesUnicos = new Set((clientesActivos || []).map(r => r.id_cliente)).size;
+
+    return {
+      reservasConfirmadas: reservasConfirmadas?.length || 0,
+      reservasPendientes: reservasPendientes?.length || 0,
+      ingresosDiarios,
+      ingresosMensuales,
+      recursosDisponibles,
+      totalRecursos: recursos?.length || 0,
+      clientesActivos: clientesUnicos,
+      totalReservasMensuales: reservasMensuales?.length || 0
+    };
+  } catch {
+    return {
+      reservasConfirmadas: 0,
+      reservasPendientes: 0,
+      ingresosDiarios: 0,
+      ingresosMensuales: 0,
+      recursosDisponibles: 0,
+      totalRecursos: 0,
+      clientesActivos: 0,
+      totalReservasMensuales: 0
+    };
+  }
+}
+
+// Estado/disponibilidad de hoy para todos los recursos activos, usando
+// recurso_horario (apertura/cierre del día) y recurso_bloqueo, en slots de 30 min.
+export async function obtenerDisponibilidadRecursosHoy() {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+
+    const ahoraUTC = new Date();
+    const ahoraBuenosAires = new Date(ahoraUTC.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
+    const hoy = obtenerFechaLocal(ahoraBuenosAires);
+    const diaSemana = ahoraBuenosAires.getDay();
+    const minutoActual = ahoraBuenosAires.getHours() * 60 + ahoraBuenosAires.getMinutes();
+
+    const { data: recursos, error: errorRecursos } = await supabase
+      .from('recurso')
+      .select('*')
+      .eq('activo', true)
+      .order('id_recurso');
+
+    if (errorRecursos) {
+      throw new Error(`Error al obtener recursos: ${errorRecursos.message}`);
+    }
+
+    const idsRecurso = (recursos || []).map(r => r.id_recurso);
+
+    if (idsRecurso.length === 0) {
+      return [];
+    }
+
+    const [{ data: horarios }, { data: reservasHoy }, { data: bloqueosHoy }] = await Promise.all([
+      supabase.from('recurso_horario').select('id_recurso, hora_apertura, hora_cierre').in('id_recurso', idsRecurso).eq('dia_semana', diaSemana).eq('activo', true),
+      supabase.from('reserva').select('id_recurso, hora_inicio, hora_fin, estado_reserva, fecha_expiracion_pago').in('id_recurso', idsRecurso).eq('fecha_reserva', hoy).neq('estado_reserva', 'cancelada'),
+      supabase.from('recurso_bloqueo').select('id_recurso, hora_inicio, hora_fin').in('id_recurso', idsRecurso).eq('fecha', hoy).eq('activo', true)
+    ]);
+
+    const ahora = new Date();
+
+    return (recursos || []).map(recurso => {
+      const horario = (horarios || []).find(h => h.id_recurso === recurso.id_recurso);
+      const enMantenimiento = recurso.estado !== 'DISPONIBLE';
+
+      const base = {
+        id_recurso: recurso.id_recurso,
+        nombre: recurso.nombre,
+        tipo_recurso: recurso.tipo_recurso,
+        deporte: recurso.deporte,
+        capacidad: recurso.capacidad,
+        estado: recurso.estado,
+        activo: recurso.activo,
+        enMantenimiento
+      };
+
+      if (!horario) {
+        return {
+          ...base,
+          horaApertura: null,
+          horaCierre: null,
+          horariosOcupados: [],
+          horariosDisponibles: [],
+          horariosPasados: [],
+          totalHorariosHoy: 0
+        };
+      }
+
+      const reservasRecurso = (reservasHoy || [])
+        .filter(r => r.id_recurso === recurso.id_recurso)
+        .filter(r => reservaBloqueaRecurso(r, ahora));
+
+      const bloqueosRecurso = (bloqueosHoy || []).filter(b => b.id_recurso === recurso.id_recurso);
+
+      const slots = generarSlotsDeMediaHora(horario.hora_apertura, horario.hora_cierre);
+      const disponibles: string[] = [];
+      const pasados: string[] = [];
+      const rangosOcupados = new Set<string>();
+
+      slots.forEach(slot => {
+        if (enMantenimiento) return;
+
+        const finSlot = calcularHoraFinPorDuracion(slot, 30);
+        const reservaOcupante = reservasRecurso.find(r => haySolapamientoDeHorarios(slot, finSlot, r.hora_inicio, r.hora_fin));
+        const bloqueoOcupante = bloqueosRecurso.find(b => haySolapamientoDeHorarios(slot, finSlot, b.hora_inicio, b.hora_fin));
+
+        if (reservaOcupante) {
+          rangosOcupados.add(`${reservaOcupante.hora_inicio.substring(0, 5)}-${reservaOcupante.hora_fin.substring(0, 5)}`);
+        } else if (bloqueoOcupante) {
+          rangosOcupados.add(`${bloqueoOcupante.hora_inicio.substring(0, 5)}-${bloqueoOcupante.hora_fin.substring(0, 5)}`);
+        } else if (horaAMinutos(slot) <= minutoActual) {
+          pasados.push(slot);
+        } else {
+          disponibles.push(slot);
+        }
+      });
+
+      return {
+        ...base,
+        horaApertura: horario.hora_apertura,
+        horaCierre: horario.hora_cierre,
+        horariosOcupados: Array.from(rangosOcupados),
+        horariosDisponibles: disponibles,
+        horariosPasados: pasados,
+        totalHorariosHoy: slots.length
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+// Disponibilidad de un recurso para los próximos 7 días (modal del dashboard),
+// resuelta en una sola server action para no hacer 7 consultas desde el cliente.
+export async function obtenerDisponibilidadSemanalRecurso(idRecurso: number) {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+
+    const ahoraUTC = new Date();
+    const ahoraBuenosAires = new Date(ahoraUTC.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
+
+    const fechas: string[] = [];
+    for (let i = 0; i < 7; i++) {
+      const fecha = new Date(ahoraBuenosAires);
+      fecha.setDate(ahoraBuenosAires.getDate() + i);
+      fechas.push(obtenerFechaLocal(fecha));
+    }
+
+    const [{ data: horarios }, { data: reservas }, { data: bloqueos }] = await Promise.all([
+      supabase.from('recurso_horario').select('dia_semana, hora_apertura, hora_cierre').eq('id_recurso', idRecurso).eq('activo', true),
+      supabase.from('reserva').select('fecha_reserva, hora_inicio, hora_fin, estado_reserva, fecha_expiracion_pago').eq('id_recurso', idRecurso).gte('fecha_reserva', fechas[0]).lte('fecha_reserva', fechas[6]).neq('estado_reserva', 'cancelada'),
+      supabase.from('recurso_bloqueo').select('fecha, hora_inicio, hora_fin').eq('id_recurso', idRecurso).eq('activo', true).gte('fecha', fechas[0]).lte('fecha', fechas[6])
+    ]);
+
+    const ahora = new Date();
+
+    return fechas.map(fecha => {
+      const [year, month, day] = fecha.split('-').map(Number);
+      const diaSemana = new Date(year, month - 1, day).getDay();
+      const horario = (horarios || []).find(h => h.dia_semana === diaSemana);
+
+      if (!horario) {
+        return { fecha, horaApertura: null, horaCierre: null, horariosDisponibles: [], horariosOcupados: [] };
+      }
+
+      const reservasDelDia = (reservas || [])
+        .filter(r => r.fecha_reserva === fecha)
+        .filter(r => reservaBloqueaRecurso(r, ahora));
+      const bloqueosDelDia = (bloqueos || []).filter(b => b.fecha === fecha);
+
+      const slots = generarSlotsDeMediaHora(horario.hora_apertura, horario.hora_cierre);
+      const disponibles: string[] = [];
+      const ocupados: string[] = [];
+
+      slots.forEach(slot => {
+        const finSlot = calcularHoraFinPorDuracion(slot, 30);
+        const ocupado =
+          reservasDelDia.some(r => haySolapamientoDeHorarios(slot, finSlot, r.hora_inicio, r.hora_fin)) ||
+          bloqueosDelDia.some(b => haySolapamientoDeHorarios(slot, finSlot, b.hora_inicio, b.hora_fin));
+
+        if (ocupado) {
+          ocupados.push(slot);
+        } else {
+          disponibles.push(slot);
+        }
+      });
+
+      return {
+        fecha,
+        horaApertura: horario.hora_apertura,
+        horaCierre: horario.hora_cierre,
+        horariosDisponibles: disponibles,
+        horariosOcupados: ocupados
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+// Reservas por horario en buckets de 30 min (en vez de forzar todo a :00),
+// agnóstico de cancha/recurso ya que solo agrupa por reserva.hora_inicio.
+export async function obtenerReservasPorHorarioRecurso() {
+  try {
+    const supabase = createServerComponentClient({ cookies });
+    const { data: reservas } = await supabase
+      .from('reserva')
+      .select('hora_inicio')
+      .neq('estado_reserva', 'cancelada');
+
+    const horarios: { [key: string]: number } = {};
+
+    (reservas || []).forEach(reserva => {
+      const minutos = horaAMinutos(reserva.hora_inicio.substring(0, 5));
+      const minutosRedondeados = Math.floor(minutos / 30) * 30;
+      const hh = Math.floor(minutosRedondeados / 60).toString().padStart(2, '0');
+      const mm = (minutosRedondeados % 60).toString().padStart(2, '0');
+      horarios[`${hh}:${mm}`] = (horarios[`${hh}:${mm}`] || 0) + 1;
+    });
+
+    return Object.entries(horarios)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([hora, cantidad]) => ({ hora, cantidad }));
+  } catch {
+    return [];
+  }
 }
 
 
