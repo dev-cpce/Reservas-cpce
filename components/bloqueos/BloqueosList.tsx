@@ -31,35 +31,6 @@ export default function BloqueosList({
 
   const formatearHora = (hora: string) => hora?.substring(0, 5) || '';
 
-  // Diálogo de confirmación para eliminar bloqueo
-  const ConfirmDeleteDialog = ({ id, descripcion }: { id: number; descripcion: string }) => (
-    <div className="fixed inset-0 z-10 flex items-center justify-center bg-black bg-opacity-50">
-      <div className="bg-white p-6 rounded-lg max-w-md w-full">
-        <h3 className="text-lg font-medium mb-4">Confirmar eliminación</h3>
-        <p className="text-gray-600 mb-6">
-          ¿Estás seguro de que deseas eliminar el bloqueo <span className="font-semibold">{descripcion}</span>? Esta acción no se puede deshacer.
-        </p>
-        <div className="flex justify-end space-x-3">
-          <button
-            onClick={() => setBloqueoAEliminar(null)}
-            className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-100"
-          >
-            Cancelar
-          </button>
-          <button
-            onClick={() => {
-              onDelete(id);
-              setBloqueoAEliminar(null);
-            }}
-            className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
-          >
-            Eliminar
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-
   if (bloqueos.length === 0) {
     return (
       <div className="text-center py-10 bg-white rounded-lg shadow">
@@ -129,15 +100,6 @@ export default function BloqueosList({
                   >
                     <PencilIcon className="h-5 w-5" />
                   </button>
-
-                  {/* Eliminar */}
-                  <button
-                    onClick={() => setBloqueoAEliminar(bloqueo.id_bloqueo)}
-                    className="text-red-600 hover:text-red-900"
-                    title="Eliminar bloqueo"
-                  >
-                    <TrashIcon className="h-5 w-5" />
-                  </button>
                 </div>
               </td>
             </tr>
@@ -145,12 +107,6 @@ export default function BloqueosList({
         </tbody>
       </table>
 
-      {bloqueoAEliminar && (
-        <ConfirmDeleteDialog
-          id={bloqueoAEliminar}
-          descripcion={`${nombreRecurso(bloqueos.find(b => b.id_bloqueo === bloqueoAEliminar)?.id_recurso || 0)} - ${bloqueos.find(b => b.id_bloqueo === bloqueoAEliminar)?.fecha || ''}`}
-        />
-      )}
     </div>
   );
 }

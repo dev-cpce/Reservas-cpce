@@ -43,6 +43,7 @@ export default function Navbar({ title }: NavbarProps) {
     if (pathname.includes('/reservas')) return 'Gestión de Reservas';
     if (pathname.includes('/clientes')) return 'Gestión de Clientes';
     if (pathname.includes('/pagos')) return 'Gestión de Pagos';
+    if (pathname.includes('/reportes')) return 'Reportes';
     
     return 'ReservaYA';
   };

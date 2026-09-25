@@ -10,6 +10,7 @@ import {
     UserGroupIcon, 
     CreditCardIcon,
     NoSymbolIcon,
+    ChartBarIcon,
     ArrowRightOnRectangleIcon
 } from '@heroicons/react/24/outline';
 
@@ -19,7 +20,8 @@ const navigation = [
     { name: 'Bloqueos', href: '/bloqueos', icon: NoSymbolIcon },
     { name: 'Reservas', href: '/reservas', icon: CalendarDaysIcon },
     { name: 'Clientes', href: '/clientes', icon: UserGroupIcon },
-    { name: 'Pagos', href: '/pagos', icon: CreditCardIcon }
+    { name: 'Pagos', href: '/pagos', icon: CreditCardIcon },
+    { name: 'Reportes', href: '/reportes', icon: ChartBarIcon }
 ];
 
 export default function Sidebar() {

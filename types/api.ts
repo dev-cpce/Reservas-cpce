@@ -5,19 +5,23 @@ export interface ApiResponse<T = unknown> {
   error?: string;
 }
 
-export interface DisponibilidadCanchaResponse {
-  id_cancha: number;
+export interface DisponibilidadRecursoResponse {
+  id_recurso: number;
   nombre: string;
-  tipo: string; // Tipo de cancha: "7", "11", etc.
-  precio_hora: number;
+  tipo_recurso: string;
+  deporte: string | null;
+  capacidad: number | null;
   estado: string;
+  disponible: boolean;
   horariosDisponibles: string[];
   horariosOcupados: {
     hora_inicio: string;
     hora_fin: string;
-    cliente: string;
+    tipo: 'reserva' | 'bloqueo';
+    motivo?: string | null;
   }[];
 }
+
 
 export interface ReservaExternaRequest {
   cliente_nombre: string;
@@ -75,10 +79,10 @@ export interface ClienteExternoRequest {
 }
 
 export interface ConsultaDisponibilidadRequest {
-  fecha?: string; // YYYY-MM-DD, si no se envía usa hoy
-  cancha_id?: number; // si no se envía, devuelve todas
-  tipo?: string; // filtro por tipo de cancha: "7", "11", etc.
-  hora_inicio?: string; // filtro por hora específica: "22:00", "14:00", etc.
+  fecha?: string; // YYYY-MM-DD
+  id_recurso?: number;
+  hora_inicio?: string; // HH:MM
+  duracion_minutos?: 90 | 120;
 }
 
 export interface EstadisticasResponse {
@@ -105,6 +109,7 @@ export interface VerificarClienteResponse {
     apellido: string;
     telefono?: string;
     chat_id: string;
+    tipo_cliente: 'SOCIO' | 'NO_SOCIO';
   };
 }
 
@@ -121,6 +126,7 @@ export interface CrearClienteResponse {
   apellido: string;
   telefono?: string;
   chat_id: string;
+  tipo_cliente: 'SOCIO' | 'NO_SOCIO';
 }
 
 // Interfaces para cliente_pendiente
