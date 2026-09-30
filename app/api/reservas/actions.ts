@@ -15,6 +15,7 @@ import {
   calcularFechaExpiracionPago,
   horaAMinutos
 } from '@/lib/recursoDisponibilidad';
+import { tienePermisoUsuario } from '@/lib/auth/tienePermisoUsuario';
 
 function obtenerFechaLocal(fecha: Date): string {
   return fecha.getFullYear() + '-' + 
@@ -425,40 +426,55 @@ export async function actualizarReserva(
 
 // Eliminar una reserva
 export async function eliminarReserva(id: number) {
+  const permitido = await tienePermisoUsuario('reservas.eliminar');
+
+  if (!permitido) {
+    throw new Error('No tenés permisos para eliminar reservas.');
+  }
+
   const supabase = createServerComponentClient({ cookies });
-  
+
   const { error } = await supabase
     .from('reserva')
     .delete()
     .eq('id_reserva', id);
-  
+
   if (error) {
-        throw new Error('Error al eliminar la reserva');
+    throw new Error('Error al eliminar la reserva  - Permisos insuficientes');
   }
-  
+
   revalidatePath('/reservas');
   return true;
 }
 
 // Cambiar el estado de una reserva
 export async function cambiarEstadoReserva(id: number, estado: string) {
-  const supabase = createServerComponentClient({ cookies });
-  
-  // Validar que el estado sea válido
   const estadosValidos = ['pendiente', 'confirmada', 'cancelada', 'completada'];
+
   if (!estadosValidos.includes(estado)) {
     throw new Error('Estado de reserva no válido');
   }
-  
+
+  // Cancelar una reserva requiere permiso específico
+  if (estado === 'cancelada') {
+    const permitido = await tienePermisoUsuario('reservas.cancelar');
+
+    if (!permitido) {
+      throw new Error('No tenés permisos para cancelar reservas.');
+    }
+  }
+
+  const supabase = createServerComponentClient({ cookies });
+
   const { error } = await supabase
     .from('reserva')
     .update({ estado_reserva: estado })
     .eq('id_reserva', id);
-  
+
   if (error) {
-        throw new Error('Error al cambiar el estado de la reserva');
+    throw new Error('Error al cambiar el estado de la reserva - Permisos insuficientes');
   }
-  
+
   revalidatePath('/reservas');
   return true;
 }
@@ -1560,6 +1576,12 @@ async function verificarDisponibilidadRecurso(
 // La verificación de solapamiento/bloqueos y el insert ahora son atómicos dentro
 // del RPC `crear_reserva_recurso` (advisory lock transaccional en Postgres).
 export async function crearReservaRecurso(datos: NuevaReservaRecursoInput) {
+  const permitido = await tienePermisoUsuario('reservas.crear');
+
+  if (!permitido) {
+    throw new Error('No tenés permisos para crear reservas.');
+  }
+
   const supabase = createServerComponentClient({ cookies });
 
   if (!esDuracionValida(datos.duracion_minutos)) {
@@ -1601,7 +1623,16 @@ export async function crearReservaRecurso(datos: NuevaReservaRecursoInput) {
 }
 
 // Actualiza una reserva del nuevo modelo, recalculando hora_fin y costo.
-export async function actualizarReservaRecurso(id: number, datos: NuevaReservaRecursoInput) {
+export async function actualizarReservaRecurso(
+  id: number,
+  datos: NuevaReservaRecursoInput
+) {
+  const permitido = await tienePermisoUsuario('reservas.editar');
+
+  if (!permitido) {
+    throw new Error('No tenés permisos para editar reservas.');
+  }
+
   const supabase = createServerComponentClient({ cookies });
 
   if (!esDuracionValida(datos.duracion_minutos)) {

@@ -73,6 +73,184 @@ function calcularHoraFin(
     .padStart(2, '0')}`;
 }
 
+export async function GET(request: NextRequest) {
+  try {
+    if (!validateApiKey(request)) {
+      return jsonResponse(401, {
+        success: false,
+        error: 'API Key no válida',
+      });
+    }
+
+    // --------------------------------------------------------
+    // 1. Obtener id_reserva desde los parámetros
+    // --------------------------------------------------------
+
+    const { searchParams } = new URL(request.url);
+    const idReservaParam = searchParams.get('id_reserva');
+
+    if (!idReservaParam) {
+      return jsonResponse(400, {
+        success: false,
+        error: 'Debe indicar el parámetro id_reserva.',
+      });
+    }
+
+    const idReserva = Number(idReservaParam);
+
+    if (!Number.isInteger(idReserva) || idReserva <= 0) {
+      return jsonResponse(400, {
+        success: false,
+        error: 'id_reserva debe ser un número entero positivo.',
+      });
+    }
+
+    const supabase = getSupabaseClient();
+
+    // --------------------------------------------------------
+    // 2. Buscar reserva
+    // --------------------------------------------------------
+
+    const { data: reserva, error: reservaError } = await supabase
+      .from('reserva')
+      .select(
+        `
+        id_reserva,
+        id_cliente,
+        id_recurso,
+        fecha_reserva,
+        hora_inicio,
+        hora_fin,
+        duracion_minutos,
+        estado_reserva,
+        costo_reserva,
+        fecha_expiracion_pago,
+        created_at,
+        updated_at
+        `
+      )
+      .eq('id_reserva', idReserva)
+      .maybeSingle();
+
+    if (reservaError) {
+      return jsonResponse(500, {
+        success: false,
+        error: `Error al buscar la reserva: ${reservaError.message}`,
+      });
+    }
+
+    if (!reserva) {
+      return jsonResponse(404, {
+        success: false,
+        error: 'Reserva no encontrada.',
+      });
+    }
+
+    // --------------------------------------------------------
+    // 3. Buscar cliente asociado
+    // --------------------------------------------------------
+
+    const { data: cliente, error: clienteError } = await supabase
+      .from('cliente')
+      .select(
+        `
+        id_cliente,
+        nombre,
+        apellido,
+        telefono,
+        chat_id,
+        tipo_cliente
+        `
+      )
+      .eq('id_cliente', reserva.id_cliente)
+      .maybeSingle();
+
+    if (clienteError) {
+      return jsonResponse(500, {
+        success: false,
+        error: `Error al buscar el cliente de la reserva: ${clienteError.message}`,
+      });
+    }
+
+    if (!cliente) {
+      return jsonResponse(404, {
+        success: false,
+        error: 'No se encontró el cliente asociado a la reserva.',
+      });
+    }
+
+    // --------------------------------------------------------
+    // 4. Buscar recurso asociado
+    // --------------------------------------------------------
+
+    const { data: recurso, error: recursoError } = await supabase
+      .from('recurso')
+      .select(
+        `
+        id_recurso,
+        nombre,
+        tipo_recurso,
+        deporte,
+        capacidad,
+        estado,
+        activo
+        `
+      )
+      .eq('id_recurso', reserva.id_recurso)
+      .maybeSingle();
+
+    if (recursoError) {
+      return jsonResponse(500, {
+        success: false,
+        error: `Error al buscar el recurso de la reserva: ${recursoError.message}`,
+      });
+    }
+
+    // --------------------------------------------------------
+    // 5. Respuesta
+    // --------------------------------------------------------
+
+    return jsonResponse(200, {
+      success: true,
+      data: {
+        ...reserva,
+
+        cliente: {
+          id_cliente: cliente.id_cliente,
+          nombre: cliente.nombre,
+          apellido: cliente.apellido,
+          telefono: cliente.telefono,
+          chat_id: cliente.chat_id,
+          tipo_cliente: cliente.tipo_cliente,
+        },
+
+        recurso: recurso
+          ? {
+              id_recurso: recurso.id_recurso,
+              nombre: recurso.nombre,
+              tipo_recurso: recurso.tipo_recurso,
+              deporte: recurso.deporte,
+              capacidad: recurso.capacidad,
+              estado: recurso.estado,
+              activo: recurso.activo,
+            }
+          : null,
+      },
+      message: 'Reserva obtenida correctamente.',
+    });
+  } catch (e) {
+    return jsonResponse(500, {
+      success: false,
+      error:
+        e instanceof Error
+          ? e.message
+          : 'Error interno del servidor',
+    });
+  }
+}
+
+
+
 // ============================================================
 // POST — Crear reserva desde n8n
 // ============================================================
@@ -423,7 +601,9 @@ export async function PUT(request: NextRequest) {
 
     const { data: cliente, error: clienteError } = await supabase
       .from('cliente')
-      .select('id_cliente, nombre, apellido, telefono, chat_id')
+      .select(
+        'id_cliente, nombre, apellido, telefono, chat_id'
+      )
       .eq('chat_id', body.chat_id)
       .maybeSingle();
 
@@ -533,7 +713,10 @@ export async function PUT(request: NextRequest) {
     // --------------------------------------------------------
 
     const nuevosDatos: {
-      estado_reserva: 'pendiente' | 'confirmada' | 'cancelada';
+      estado_reserva:
+        | 'pendiente'
+        | 'confirmada'
+        | 'cancelada';
       updated_at: string;
       fecha_expiracion_pago?: string | null;
     } = {
@@ -583,10 +766,44 @@ export async function PUT(request: NextRequest) {
       });
     }
 
+    // --------------------------------------------------------
+    // 7. Buscar recurso asociado a la reserva
+    // --------------------------------------------------------
+
+    const { data: recurso, error: recursoError } = await supabase
+      .from('recurso')
+      .select(
+        `
+        id_recurso,
+        nombre,
+        tipo_recurso,
+        deporte,
+        capacidad,
+        estado,
+        activo
+        `
+      )
+      .eq('id_recurso', reservaActualizada.id_recurso)
+      .maybeSingle();
+
+    if (recursoError) {
+      return jsonResponse(500, {
+        success: false,
+        error:
+          `Error al buscar el recurso de la reserva: ` +
+          recursoError.message,
+      });
+    }
+
+    // --------------------------------------------------------
+    // 8. Devolver reserva actualizada + cliente + recurso
+    // --------------------------------------------------------
+
     return jsonResponse(200, {
       success: true,
       data: {
         ...reservaActualizada,
+
         cliente: {
           id_cliente: cliente.id_cliente,
           nombre: cliente.nombre,
@@ -594,6 +811,18 @@ export async function PUT(request: NextRequest) {
           telefono: cliente.telefono,
           chat_id: cliente.chat_id,
         },
+
+        recurso: recurso
+          ? {
+              id_recurso: recurso.id_recurso,
+              nombre: recurso.nombre,
+              tipo_recurso: recurso.tipo_recurso,
+              deporte: recurso.deporte,
+              capacidad: recurso.capacidad,
+              estado: recurso.estado,
+              activo: recurso.activo,
+            }
+          : null,
       },
       message:
         `Estado de reserva actualizado a: ${body.estado_reserva}`,
