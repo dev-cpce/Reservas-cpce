@@ -7,7 +7,6 @@ import RecursoForm from '@/components/recursos/RecursoForm';
 import RecursosList from '@/components/recursos/RecursosList';
 import notifications from '@/lib/notifications';
 
-// Importar las acciones del servidor
 import {
     obtenerRecursos,
     crearRecurso,
@@ -16,6 +15,10 @@ import {
     cambiarEstadoRecurso
 } from '@/app/api/recursos/actions';
 
+import {
+    obtenerPermisosRecursos
+} from '@/app/api/recursos/permissions';
+
 export default function RecursosPage() {
     const [recursos, setRecursos] = useState<Recurso[]>([]);
     const [recursoEditando, setRecursoEditando] = useState<Recurso | undefined>(undefined);
@@ -23,56 +26,115 @@ export default function RecursosPage() {
     const [isLoading, setIsLoading] = useState(false);
     const [errorMessage, setErrorMessage] = useState('');
 
+    const [permisos, setPermisos] = useState({
+        puedeCrear: false,
+        puedeEditar: false,
+        puedeEliminar: false
+    });
+
+    // Cargar permisos del usuario
+    const cargarPermisos = useCallback(async () => {
+        try {
+            const permisosUsuario = await obtenerPermisosRecursos();
+            setPermisos(permisosUsuario);
+        } catch {
+            setPermisos({
+                puedeCrear: false,
+                puedeEditar: false,
+                puedeEliminar: false
+            });
+        }
+    }, []);
+
     // Cargar datos de recursos
     const cargarRecursos = useCallback(async () => {
         try {
             const data = await obtenerRecursos();
             setRecursos(data);
         } catch {
-            setErrorMessage('Error al cargar los recursos. Intenta nuevamente.');
+            setErrorMessage(
+                'Error al cargar los recursos. Intenta nuevamente.'
+            );
         }
     }, []);
 
     useEffect(() => {
+        cargarPermisos();
         cargarRecursos();
-    }, [cargarRecursos]);
+    }, [cargarPermisos, cargarRecursos]);
 
     // Manejar creación de recurso
-    const handleCrearRecurso = async (recurso: Omit<Recurso, 'id_recurso' | 'created_at' | 'updated_at'>) => {
+    const handleCrearRecurso = async (
+        recurso: Omit<
+            Recurso,
+            'id_recurso' | 'created_at' | 'updated_at'
+        >
+    ) => {
         setIsLoading(true);
         setErrorMessage('');
 
         try {
             const nuevoRecurso = await crearRecurso(recurso);
+
             if (nuevoRecurso) {
-                setRecursos(prev => [...prev, nuevoRecurso]);
+                setRecursos(prev => [
+                    ...prev,
+                    nuevoRecurso
+                ]);
             }
+
             setMostrarFormulario(false);
         } catch {
-            setErrorMessage('Error al crear el recurso. Intenta nuevamente.');
-            notifications.error('Error al crear el recurso');
+            setErrorMessage(
+                'Error al crear el recurso. Intenta nuevamente.'
+            );
+            notifications.error(
+                'Error al crear el recurso'
+            );
         } finally {
             setIsLoading(false);
         }
     };
 
     // Manejar actualización de recurso
-    const handleActualizarRecurso = async (recurso: Omit<Recurso, 'id_recurso' | 'created_at' | 'updated_at'>) => {
+    const handleActualizarRecurso = async (
+        recurso: Omit<
+            Recurso,
+            'id_recurso' | 'created_at' | 'updated_at'
+        >
+    ) => {
         if (!recursoEditando) return;
 
         setIsLoading(true);
         setErrorMessage('');
 
         try {
-            const recursoActualizado = await actualizarRecurso(recursoEditando.id_recurso, recurso);
+            const recursoActualizado =
+                await actualizarRecurso(
+                    recursoEditando.id_recurso,
+                    recurso
+                );
+
             if (recursoActualizado) {
-                setRecursos(prev => prev.map(item => item.id_recurso === recursoEditando.id_recurso ? recursoActualizado : item));
+                setRecursos(prev =>
+                    prev.map(item =>
+                        item.id_recurso ===
+                        recursoEditando.id_recurso
+                            ? recursoActualizado
+                            : item
+                    )
+                );
             }
+
             setRecursoEditando(undefined);
             setMostrarFormulario(false);
         } catch {
-            setErrorMessage('Error al actualizar el recurso. Intenta nuevamente.');
-            notifications.error('Error al actualizar el recurso');
+            setErrorMessage(
+                'Error al actualizar el recurso. Intenta nuevamente.'
+            );
+            notifications.error(
+                'Error al actualizar el recurso'
+            );
         } finally {
             setIsLoading(false);
         }
@@ -85,34 +147,64 @@ export default function RecursosPage() {
 
         try {
             await eliminarRecurso(id);
-            setRecursos(prev => prev.filter(recurso => recurso.id_recurso !== id));
+
+            setRecursos(prev =>
+                prev.filter(
+                    recurso =>
+                        recurso.id_recurso !== id
+                )
+            );
         } catch {
-            setErrorMessage('Error al eliminar el recurso. Intenta nuevamente.');
-            notifications.error('Error al eliminar el recurso');
+            setErrorMessage(
+                'Error al eliminar el recurso. Intenta nuevamente.'
+            );
+            notifications.error(
+                'Error al eliminar el recurso'
+            );
         } finally {
             setIsLoading(false);
         }
     };
 
     // Manejar cambio de estado (activo/inactivo)
-    const handleCambiarEstado = async (id: number, activo: boolean) => {
+    const handleCambiarEstado = async (
+        id: number,
+        activo: boolean
+    ) => {
         setIsLoading(true);
         setErrorMessage('');
 
         try {
-            const recursoActualizado = await cambiarEstadoRecurso(id, activo);
+            const recursoActualizado =
+                await cambiarEstadoRecurso(
+                    id,
+                    activo
+                );
+
             if (recursoActualizado) {
-                setRecursos(prev => prev.map(item => item.id_recurso === id ? recursoActualizado : item));
+                setRecursos(prev =>
+                    prev.map(item =>
+                        item.id_recurso === id
+                            ? recursoActualizado
+                            : item
+                    )
+                );
             }
         } catch {
-            setErrorMessage('Error al cambiar el estado del recurso. Intenta nuevamente.');
-            notifications.error('Error al cambiar el estado');
+            setErrorMessage(
+                'Error al cambiar el estado del recurso. Intenta nuevamente.'
+            );
+            notifications.error(
+                'Error al cambiar el estado'
+            );
         } finally {
             setIsLoading(false);
         }
     };
 
-    const handleEditarRecurso = (recurso: Recurso) => {
+    const handleEditarRecurso = (
+        recurso: Recurso
+    ) => {
         setRecursoEditando(recurso);
         setMostrarFormulario(true);
     };
@@ -122,7 +214,12 @@ export default function RecursosPage() {
         setMostrarFormulario(false);
     };
 
-    const handleSubmitFormulario = async (data: Omit<Recurso, 'id_recurso' | 'created_at' | 'updated_at'>) => {
+    const handleSubmitFormulario = async (
+        data: Omit<
+            Recurso,
+            'id_recurso' | 'created_at' | 'updated_at'
+        >
+    ) => {
         if (recursoEditando) {
             await handleActualizarRecurso(data);
         } else {
@@ -133,15 +230,18 @@ export default function RecursosPage() {
     return (
         <div className="container mx-auto px-4 py-6">
             <div className="flex justify-between items-center mb-6">
-                {!mostrarFormulario && (
-                    <button
-                        onClick={() => setMostrarFormulario(true)}
-                        className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                    >
-                        <PlusIcon className="h-5 w-5 mr-2" />
-                        Nuevo Recurso
-                    </button>
-                )}
+                {!mostrarFormulario &&
+                    permisos.puedeCrear && (
+                        <button
+                            onClick={() =>
+                                setMostrarFormulario(true)
+                            }
+                            className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                        >
+                            <PlusIcon className="h-5 w-5 mr-2" />
+                            Nuevo Recurso
+                        </button>
+                    )}
             </div>
 
             {errorMessage && (
@@ -154,7 +254,9 @@ export default function RecursosPage() {
                 <div className="flex justify-center items-center py-12">
                     <div className="flex flex-col items-center">
                         <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
-                        <p className="mt-4 text-gray-700">Cargando recursos...</p>
+                        <p className="mt-4 text-gray-700">
+                            Cargando recursos...
+                        </p>
                     </div>
                 </div>
             )}
@@ -166,13 +268,17 @@ export default function RecursosPage() {
                     isSubmitting={isLoading}
                     onCancel={handleCerrarFormulario}
                 />
-            ) : !isLoading && (
-                <RecursosList
-                    recursos={recursos}
-                    onEdit={handleEditarRecurso}
-                    onDelete={handleEliminarRecurso}
-                    onChangeStatus={handleCambiarEstado}
-                />
+            ) : (
+                !isLoading && (
+                    <RecursosList
+                        recursos={recursos}
+                        onEdit={handleEditarRecurso}
+                        onDelete={handleEliminarRecurso}
+                        onChangeStatus={handleCambiarEstado}
+                        puedeEditar={permisos.puedeEditar}
+                        puedeEliminar={permisos.puedeEliminar}
+                    />
+                )
             )}
         </div>
     );

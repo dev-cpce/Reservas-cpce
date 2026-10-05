@@ -19,13 +19,17 @@ interface ReservasListProps {
   onEdit: (reserva: Reserva) => void;
   onDelete: (id: number) => void;
   onCambiarEstado: (id: number, estado: string) => void;
+  puedeEliminar: boolean;
+  puedeCancelar: boolean;
 }
 
 export const ReservasList = ({
   reservas,
   onEdit,
   onDelete,
-  onCambiarEstado
+  onCambiarEstado,
+  puedeEliminar,
+  puedeCancelar
 }: ReservasListProps) => {
   const [reservaSeleccionada, setReservaSeleccionada] = useState<Reserva | null>(null);
   const [modalAbierto, setModalAbierto] = useState(false);
@@ -189,63 +193,62 @@ export const ReservasList = ({
                       />
                     </div>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                    <div className="flex justify-end space-x-2">
-                      {/* Botones de cambio de estado para reservas pendientes */}
-                      {reserva.estado_reserva === 'pendiente' && (
-                        <>
-                          <button
-                            onClick={() => onCambiarEstado(reserva.id_reserva, 'confirmada')}
-                            className="text-green-600 hover:text-green-900"
-                            title="Confirmar pago"
-                          >
-                            <CheckCircleIcon className="h-5 w-5" />
-                          </button>
-                          <button
-                            onClick={() => onCambiarEstado(reserva.id_reserva, 'cancelada')}
-                            className="text-red-600 hover:text-red-900"
-                            title="Cancelar reserva"
-                          >
-                            <XCircleIcon className="h-5 w-5" />
-                          </button>
-                        </>
-                      )}
-                      
-                      {/* Botón para ver detalles */}
-                      <button
-                        onClick={() => {
-                          setReservaSeleccionada(reserva);
-                          setModalAbierto(true);
-                        }}
-                        className="text-gray-600 hover:text-gray-900"
-                        title="Ver detalles"
-                      >
-                        <EyeIcon className="h-5 w-5" />
-                      </button>
-                      
-                      {/* Botón de editar - solo para reservas no confirmadas */}
-                      {reserva.estado_reserva !== 'confirmada' && (
-                        <button
-                          onClick={() => onEdit(reserva)}
-                          className="text-blue-600 hover:text-blue-900"
-                          title="Editar reserva"
-                        >
-                          <PencilIcon className="h-5 w-5" />
-                        </button>
-                      )}
-                      
-                      {/* Botón de eliminar - solo para reservas no confirmadas */}
-                      {reserva.estado_reserva !== 'confirmada' && (
-                        <button
-                          onClick={() => onDelete(reserva.id_reserva)}
-                          className="text-red-600 hover:text-red-900"
-                          title="Eliminar reserva"
-                        >
-                          <TrashIcon className="h-5 w-5" />
-                        </button>
-                      )}
-                    </div>
-                  </td>
+<td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+  <div className="flex justify-end space-x-2">
+
+    {/* Ver detalle - siempre disponible */}
+    <button
+      onClick={() => {
+        setReservaSeleccionada(reserva);
+        setModalAbierto(true);
+      }}
+      className="text-gray-600 hover:text-gray-900"
+      title="Ver detalles"
+    >
+      <EyeIcon className="h-5 w-5" />
+    </button>
+
+    {/* Editar - solo reservas pendientes */}
+    {reserva.estado_reserva === 'pendiente' && (
+      <button
+        onClick={() => onEdit(reserva)}
+        className="text-blue-600 hover:text-blue-900"
+        title="Editar reserva"
+      >
+        <PencilIcon className="h-5 w-5" />
+      </button>
+    )}
+
+    {/* Cancelar - solo GERENCIA/ADMIN y reservas pendientes */}
+    {reserva.estado_reserva === 'pendiente' &&
+      puedeCancelar && (
+        <button
+          onClick={() =>
+            onCambiarEstado(reserva.id_reserva, 'cancelada')
+          }
+          className="text-red-600 hover:text-red-900"
+          title="Cancelar reserva"
+        >
+          <XCircleIcon className="h-5 w-5" />
+        </button>
+      )}
+
+    {/* Eliminar - GERENCIA/ADMIN:
+        pendiente o cancelada */}
+    {(reserva.estado_reserva === 'pendiente' ||
+      reserva.estado_reserva === 'cancelada') &&
+      puedeEliminar && (
+        <button
+          onClick={() => onDelete(reserva.id_reserva)}
+          className="text-red-600 hover:text-red-900"
+          title="Eliminar reserva"
+        >
+          <TrashIcon className="h-5 w-5" />
+        </button>
+      )}
+
+  </div>
+</td>
                 </tr>
               ))
             )}
@@ -259,7 +262,6 @@ export const ReservasList = ({
           reserva={reservaSeleccionada}
           isOpen={modalAbierto}
           onClose={() => setModalAbierto(false)}
-          onChangeStatus={handleCambioEstado}
         />
       )}
     </div>

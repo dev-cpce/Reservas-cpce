@@ -4,7 +4,10 @@ import { useState, useEffect } from 'react';
 import { Reserva, Cliente, Recurso, NuevaReservaRecursoInput } from '@/types';
 import { CalendarIcon, ClockIcon, MagnifyingGlassIcon, PlusIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { obtenerReservasPorFechaYRecurso, obtenerHorarioRecurso, obtenerBloqueosActivosRecurso } from '@/app/api/reservas/actions';
-import { crearCliente } from '@/app/api/clientes/actions';
+import {
+  crearCliente,
+  buscarClientes
+} from '@/app/api/clientes/actions';
 import { DURACIONES_VALIDAS_MINUTOS, esDuracionValida, calcularHoraFinPorDuracion, haySolapamientoDeHorarios, horaAMinutos } from '@/lib/recursoDisponibilidad';
 
 interface ReservaFormProps {
@@ -41,22 +44,46 @@ export default function ReservaForm({
   const [creandoCliente, setCreandoCliente] = useState<boolean>(false);
   
   const esRecursoDisponible = (recurso: Recurso) => recurso.activo && recurso.estado === 'DISPONIBLE';
-  
-  useEffect(() => {
-    if (!busquedaCliente.trim()) {
-      setClientesFiltrados(clientes.slice(0, 10));
-    } else {
-      const filtrados = clientes.filter(cliente => {
-        const nombre = `${cliente.nombre} ${cliente.apellido}`.toLowerCase();
-        const telefono = cliente.telefono?.toLowerCase() || '';
-        const busqueda = busquedaCliente.toLowerCase();
-        
-        return nombre.includes(busqueda) || 
-               telefono.includes(busqueda);
-      });
-      setClientesFiltrados(filtrados.slice(0, 10));
+  const [buscandoCliente, setBuscandoCliente] = useState(false);
+
+  console.log('TOTAL CLIENTES RECIBIDOS:', clientes.length);
+
+console.log(
+  'CLIENTES LUCAS:',
+  clientes.filter((cliente) =>
+    `${cliente.nombre || ''} ${cliente.apellido || ''}`
+      .toLowerCase()
+      .includes('lucas')
+  )
+);
+
+useEffect(() => {
+  const termino = busquedaCliente.trim();
+
+  if (!termino) {
+    setClientesFiltrados(clientes.slice(0, 10));
+    return;
+  }
+
+  const timeout = setTimeout(async () => {
+    try {
+      setBuscandoCliente(true);
+
+      const resultados = await buscarClientes(termino);
+
+      setClientesFiltrados(resultados);
+    } catch (error) {
+      console.error('Error al buscar cliente:', error);
+      setClientesFiltrados([]);
+    } finally {
+      setBuscandoCliente(false);
     }
-  }, [busquedaCliente, clientes]);
+  }, 300);
+
+  return () => {
+    clearTimeout(timeout);
+  };
+}, [busquedaCliente, clientes]);
 
   const handleCrearCliente = async () => {
     if (!nuevoCliente.nombre.trim() || !nuevoCliente.apellido.trim()) {

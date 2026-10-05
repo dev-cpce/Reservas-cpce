@@ -3,11 +3,21 @@
 import { createServerComponentClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
 import { Recurso } from '@/types';
+import { tienePermisoUsuario } from '@/lib/auth/tienePermisoUsuario';
 
 /**
- * Obtiene todos los recursos de la base de datos (incluye inactivos y en mantenimiento)
+ * Obtiene todos los recursos de la base de datos
+ * (incluye inactivos y en mantenimiento).
  */
 export async function obtenerRecursos() {
+  const permitido = await tienePermisoUsuario('recursos.ver');
+
+  if (!permitido) {
+    throw new Error(
+      'No tenés permisos para ver los recursos.'
+    );
+  }
+
   const supabase = createServerComponentClient({ cookies });
 
   const { data, error } = await supabase
@@ -16,16 +26,26 @@ export async function obtenerRecursos() {
     .order('id_recurso', { ascending: true });
 
   if (error) {
-    throw new Error('No se pudieron cargar los recursos');
+    throw new Error(
+      'No se pudieron cargar los recursos'
+    );
   }
 
   return data || [];
 }
 
 /**
- * Obtiene un recurso por su ID
+ * Obtiene un recurso por su ID.
  */
 export async function obtenerRecursoPorId(id: number) {
+  const permitido = await tienePermisoUsuario('recursos.ver');
+
+  if (!permitido) {
+    throw new Error(
+      'No tenés permisos para ver los recursos.'
+    );
+  }
+
   const supabase = createServerComponentClient({ cookies });
 
   const { data, error } = await supabase
@@ -35,16 +55,33 @@ export async function obtenerRecursoPorId(id: number) {
     .single();
 
   if (error) {
-    throw new Error('No se pudo encontrar el recurso');
+    throw new Error(
+      'No se pudo encontrar el recurso'
+    );
   }
 
   return data;
 }
 
 /**
- * Crea un nuevo recurso
+ * Crea un nuevo recurso.
  */
-export async function crearRecurso(recurso: Omit<Recurso, 'id_recurso' | 'created_at' | 'updated_at'>) {
+export async function crearRecurso(
+  recurso: Omit<
+    Recurso,
+    'id_recurso' | 'created_at' | 'updated_at'
+  >
+) {
+  const permitido = await tienePermisoUsuario(
+    'recursos.crear'
+  );
+
+  if (!permitido) {
+    throw new Error(
+      'No tenés permisos para crear recursos.'
+    );
+  }
+
   const supabase = createServerComponentClient({ cookies });
 
   const { data, error } = await supabase
@@ -53,16 +90,36 @@ export async function crearRecurso(recurso: Omit<Recurso, 'id_recurso' | 'create
     .select();
 
   if (error) {
-    throw new Error('No se pudo crear el recurso');
+    throw new Error(
+      'No se pudo crear el recurso'
+    );
   }
 
   return data?.[0];
 }
 
 /**
- * Actualiza un recurso existente
+ * Actualiza un recurso existente.
  */
-export async function actualizarRecurso(id: number, recurso: Partial<Omit<Recurso, 'id_recurso' | 'created_at' | 'updated_at'>>) {
+export async function actualizarRecurso(
+  id: number,
+  recurso: Partial<
+    Omit<
+      Recurso,
+      'id_recurso' | 'created_at' | 'updated_at'
+    >
+  >
+) {
+  const permitido = await tienePermisoUsuario(
+    'recursos.editar'
+  );
+
+  if (!permitido) {
+    throw new Error(
+      'No tenés permisos para editar recursos.'
+    );
+  }
+
   const supabase = createServerComponentClient({ cookies });
 
   const { data, error } = await supabase
@@ -72,16 +129,28 @@ export async function actualizarRecurso(id: number, recurso: Partial<Omit<Recurs
     .select();
 
   if (error) {
-    throw new Error('No se pudo actualizar el recurso');
+    throw new Error(
+      'No se pudo actualizar el recurso'
+    );
   }
 
   return data?.[0];
 }
 
 /**
- * Elimina un recurso por su ID
+ * Elimina un recurso por su ID.
  */
 export async function eliminarRecurso(id: number) {
+  const permitido = await tienePermisoUsuario(
+    'recursos.eliminar'
+  );
+
+  if (!permitido) {
+    throw new Error(
+      'No tenés permisos para eliminar recursos.'
+    );
+  }
+
   const supabase = createServerComponentClient({ cookies });
 
   const { error } = await supabase
@@ -90,15 +159,30 @@ export async function eliminarRecurso(id: number) {
     .eq('id_recurso', id);
 
   if (error) {
-    throw new Error('No se pudo eliminar el recurso');
+    throw new Error(
+      'No se pudo eliminar el recurso'
+    );
   }
 
   return true;
 }
 
 /**
- * Activa o desactiva un recurso
+ * Activa o desactiva un recurso.
  */
-export async function cambiarEstadoRecurso(id: number, activo: boolean) {
+export async function cambiarEstadoRecurso(
+  id: number,
+  activo: boolean
+) {
+  const permitido = await tienePermisoUsuario(
+    'recursos.editar'
+  );
+
+  if (!permitido) {
+    throw new Error(
+      'No tenés permisos para editar recursos.'
+    );
+  }
+
   return actualizarRecurso(id, { activo });
 }

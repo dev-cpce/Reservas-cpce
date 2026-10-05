@@ -11,14 +11,12 @@ interface ReservaDetailsModalProps {
   reserva: Reserva;
   isOpen: boolean;
   onClose: () => void;
-  onChangeStatus: (id: number, estado: string) => void;
 }
 
 export const ReservaDetailsModal = ({
   reserva,
   isOpen,
-  onClose,
-  onChangeStatus
+  onClose
 }: ReservaDetailsModalProps) => {
   // Formatear fecha
   const formatearFecha = (fechaStr: string) => {
@@ -68,12 +66,6 @@ export const ReservaDetailsModal = ({
 
       return 0;
     }
-  };
-
-  // Manejar cambio de estado
-  const handleChangeStatus = (estado: string) => {
-    onChangeStatus(reserva.id_reserva, estado);
-    onClose();
   };
 
   // Obtener clase para el badge de estado
@@ -200,43 +192,6 @@ export const ReservaDetailsModal = ({
                   )}
                 </div>
 
-                <div className="mt-8">
-                  <p className="text-sm text-gray-500 mb-3">Cambiar estado:</p>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      onClick={() => handleChangeStatus('pendiente')}
-                      className={`px-3 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800 
-                        ${reserva.estado_reserva === 'pendiente' ? 'ring-2 ring-yellow-500' : ''}`}
-                      disabled={reserva.estado_reserva === 'pendiente'}
-                    >
-                      Pendiente
-                    </button>
-                    <button
-                      onClick={() => handleChangeStatus('confirmada')}
-                      className={`px-3 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800
-                        ${reserva.estado_reserva === 'confirmada' ? 'ring-2 ring-green-500' : ''}`}
-                      disabled={reserva.estado_reserva === 'confirmada'}
-                    >
-                      Confirmada
-                    </button>
-                    <button
-                      onClick={() => handleChangeStatus('completada')}
-                      className={`px-3 py-1 text-xs font-semibold rounded-full bg-blue-100 text-blue-800
-                        ${reserva.estado_reserva === 'completada' ? 'ring-2 ring-blue-500' : ''}`}
-                      disabled={reserva.estado_reserva === 'completada'}
-                    >
-                      Completada
-                    </button>
-                    <button
-                      onClick={() => handleChangeStatus('cancelada')}
-                      className={`px-3 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800
-                        ${reserva.estado_reserva === 'cancelada' ? 'ring-2 ring-red-500' : ''}`}
-                      disabled={reserva.estado_reserva === 'cancelada'}
-                    >
-                      Cancelada
-                    </button>
-                  </div>
-                </div>
               </Dialog.Panel>
             </Transition.Child>
           </div>

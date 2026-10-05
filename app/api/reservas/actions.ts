@@ -449,7 +449,12 @@ export async function eliminarReserva(id: number) {
 
 // Cambiar el estado de una reserva
 export async function cambiarEstadoReserva(id: number, estado: string) {
-  const estadosValidos = ['pendiente', 'confirmada', 'cancelada', 'completada'];
+  const estadosValidos = [
+    'pendiente',
+    'confirmada',
+    'cancelada',
+    'completada',
+  ];
 
   if (!estadosValidos.includes(estado)) {
     throw new Error('Estado de reserva no válido');
@@ -464,6 +469,17 @@ export async function cambiarEstadoReserva(id: number, estado: string) {
     }
   }
 
+  // Confirmar el pago de una reserva requiere permiso específico
+  if (estado === 'confirmada') {
+    const permitido = await tienePermisoUsuario('pagos.confirmar');
+
+    if (!permitido) {
+      throw new Error(
+        'No tenés permisos para confirmar el pago de reservas.'
+      );
+    }
+  }
+
   const supabase = createServerComponentClient({ cookies });
 
   const { error } = await supabase
@@ -472,10 +488,13 @@ export async function cambiarEstadoReserva(id: number, estado: string) {
     .eq('id_reserva', id);
 
   if (error) {
-    throw new Error('Error al cambiar el estado de la reserva - Permisos insuficientes');
+    throw new Error(
+      'Error al cambiar el estado de la reserva - Permisos insuficientes'
+    );
   }
 
   revalidatePath('/reservas');
+
   return true;
 }
 
@@ -1673,6 +1692,57 @@ export async function actualizarReservaRecurso(
 // (obtenerEstadisticasDashboard, obtenerHorariosDisponibles, obtenerReservasPorHorario).
 // Esas funciones legacy NO se modifican ni se eliminan.
 // ============================================================================
+
+// Elimina una reserva del nuevo modelo basado en `recurso`.
+export async function eliminarReservaRecurso(id: number) {
+  const permitido = await tienePermisoUsuario('reservas.eliminar');
+
+  if (!permitido) {
+    throw new Error('No tenés permisos para eliminar reservas.');
+  }
+
+  const supabase = createServerComponentClient({ cookies });
+
+  const { data: reserva, error: errorConsulta } = await supabase
+    .from('reserva')
+    .select('id_reserva, id_recurso')
+    .eq('id_reserva', id)
+    .maybeSingle();
+
+  if (errorConsulta) {
+    throw new Error(
+      `Error al buscar la reserva antes de eliminarla: ${errorConsulta.message}`
+    );
+  }
+
+  if (!reserva) {
+    throw new Error('La reserva no existe.');
+  }
+
+  const { error } = await supabase
+    .from('reserva')
+    .delete()
+    .eq('id_reserva', id)
+    .eq('id_recurso', reserva.id_recurso);
+
+  if (error) {
+    throw new Error(`Error al eliminar la reserva: ${error.message}`);
+  }
+
+  revalidatePath('/reservas');
+
+  return true;
+}
+
+export async function obtenerPermisosReservas() {
+  const puedeEliminar = await tienePermisoUsuario('reservas.eliminar');
+  const puedeCancelar = await tienePermisoUsuario('reservas.cancelar');
+
+  return {
+    puedeEliminar,
+    puedeCancelar,
+  };
+}
 
 function generarSlotsDeMediaHora(horaApertura: string, horaCierre: string): string[] {
   const slots: string[] = [];

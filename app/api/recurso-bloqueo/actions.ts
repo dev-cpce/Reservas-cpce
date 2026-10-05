@@ -3,11 +3,20 @@
 import { createServerComponentClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
 import { RecursoBloqueo } from '@/types';
+import { tienePermisoUsuario } from '@/lib/auth/tienePermisoUsuario';
 
 /**
- * Obtiene todos los bloqueos de recursos
+ * Obtiene todos los bloqueos de recursos.
  */
 export async function obtenerBloqueos() {
+  const permitido = await tienePermisoUsuario('bloqueos.ver');
+
+  if (!permitido) {
+    throw new Error(
+      'No tenés permisos para ver los bloqueos.'
+    );
+  }
+
   const supabase = createServerComponentClient({ cookies });
 
   const { data, error } = await supabase
@@ -16,16 +25,26 @@ export async function obtenerBloqueos() {
     .order('fecha', { ascending: false });
 
   if (error) {
-    throw new Error('No se pudieron cargar los bloqueos');
+    throw new Error(
+      'No se pudieron cargar los bloqueos'
+    );
   }
 
   return data || [];
 }
 
 /**
- * Obtiene un bloqueo por su ID
+ * Obtiene un bloqueo por su ID.
  */
 export async function obtenerBloqueoPorId(id: number) {
+  const permitido = await tienePermisoUsuario('bloqueos.ver');
+
+  if (!permitido) {
+    throw new Error(
+      'No tenés permisos para ver los bloqueos.'
+    );
+  }
+
   const supabase = createServerComponentClient({ cookies });
 
   const { data, error } = await supabase
@@ -35,16 +54,33 @@ export async function obtenerBloqueoPorId(id: number) {
     .single();
 
   if (error) {
-    throw new Error('No se pudo encontrar el bloqueo');
+    throw new Error(
+      'No se pudo encontrar el bloqueo'
+    );
   }
 
   return data;
 }
 
 /**
- * Crea un nuevo bloqueo
+ * Crea un nuevo bloqueo.
  */
-export async function crearBloqueo(bloqueo: Omit<RecursoBloqueo, 'id_bloqueo' | 'created_at'>) {
+export async function crearBloqueo(
+  bloqueo: Omit<
+    RecursoBloqueo,
+    'id_bloqueo' | 'created_at'
+  >
+) {
+  const permitido = await tienePermisoUsuario(
+    'bloqueos.crear'
+  );
+
+  if (!permitido) {
+    throw new Error(
+      'No tenés permisos para crear bloqueos.'
+    );
+  }
+
   const supabase = createServerComponentClient({ cookies });
 
   const { data, error } = await supabase
@@ -53,16 +89,36 @@ export async function crearBloqueo(bloqueo: Omit<RecursoBloqueo, 'id_bloqueo' | 
     .select();
 
   if (error) {
-    throw new Error('No se pudo crear el bloqueo');
+    throw new Error(
+      'No se pudo crear el bloqueo'
+    );
   }
 
   return data?.[0];
 }
 
 /**
- * Actualiza un bloqueo existente
+ * Actualiza un bloqueo existente.
  */
-export async function actualizarBloqueo(id: number, bloqueo: Partial<Omit<RecursoBloqueo, 'id_bloqueo' | 'created_at'>>) {
+export async function actualizarBloqueo(
+  id: number,
+  bloqueo: Partial<
+    Omit<
+      RecursoBloqueo,
+      'id_bloqueo' | 'created_at'
+    >
+  >
+) {
+  const permitido = await tienePermisoUsuario(
+    'bloqueos.editar'
+  );
+
+  if (!permitido) {
+    throw new Error(
+      'No tenés permisos para editar bloqueos.'
+    );
+  }
+
   const supabase = createServerComponentClient({ cookies });
 
   const { data, error } = await supabase
@@ -72,16 +128,28 @@ export async function actualizarBloqueo(id: number, bloqueo: Partial<Omit<Recurs
     .select();
 
   if (error) {
-    throw new Error('No se pudo actualizar el bloqueo');
+    throw new Error(
+      'No se pudo actualizar el bloqueo'
+    );
   }
 
   return data?.[0];
 }
 
 /**
- * Elimina un bloqueo por su ID
+ * Elimina un bloqueo por su ID.
  */
 export async function eliminarBloqueo(id: number) {
+  const permitido = await tienePermisoUsuario(
+    'bloqueos.eliminar'
+  );
+
+  if (!permitido) {
+    throw new Error(
+      'No tenés permisos para eliminar bloqueos.'
+    );
+  }
+
   const supabase = createServerComponentClient({ cookies });
 
   const { error } = await supabase
@@ -90,15 +158,30 @@ export async function eliminarBloqueo(id: number) {
     .eq('id_bloqueo', id);
 
   if (error) {
-    throw new Error('No se pudo eliminar el bloqueo');
+    throw new Error(
+      'No se pudo eliminar el bloqueo'
+    );
   }
 
   return true;
 }
 
 /**
- * Activa o desactiva un bloqueo
+ * Activa o desactiva un bloqueo.
  */
-export async function cambiarEstadoBloqueo(id: number, activo: boolean) {
+export async function cambiarEstadoBloqueo(
+  id: number,
+  activo: boolean
+) {
+  const permitido = await tienePermisoUsuario(
+    'bloqueos.editar'
+  );
+
+  if (!permitido) {
+    throw new Error(
+      'No tenés permisos para editar bloqueos.'
+    );
+  }
+
   return actualizarBloqueo(id, { activo });
 }
