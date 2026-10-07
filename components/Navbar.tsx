@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState } from 'react';
-import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import { usePathname, useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { useSupabaseClient, useUser } from '@supabase/auth-helpers-react';
@@ -37,7 +36,6 @@ export default function Navbar({ title }: NavbarProps) {
     if (title) return title;
     
     if (pathname.includes('/dashboard')) return 'Panel del Control';
-    if (pathname.includes('/canchas')) return 'Gestión de Canchas';
     if (pathname.includes('/recursos')) return 'Gestión de Recursos';
     if (pathname.includes('/bloqueos')) return 'Gestión de Bloqueos';
     if (pathname.includes('/reservas')) return 'Gestión de Reservas';
@@ -53,17 +51,6 @@ export default function Navbar({ title }: NavbarProps) {
       <h1 className="text-2xl font-bold text-gray-900">{getTitle()}</h1>
       
       <div className="flex items-center gap-4">
-        {pathname.includes('/canchas') && (
-          <div className="relative">
-            <input
-              type="text"
-              placeholder="Buscar canchas..."
-              className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-            <MagnifyingGlassIcon className="h-5 w-5 text-gray-400 absolute left-3 top-1/2 transform -translate-y-1/2" />
-          </div>
-        )}
-
     
         
         <div className="flex items-center gap-3">

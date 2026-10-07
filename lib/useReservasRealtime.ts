@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient';
 import notifications from './notifications';
 
 const clienteCache = new Map<number, string>();
-const canchaCache = new Map<number, string>();
+const recursoCache = new Map<number, string>();
 
 async function obtenerNombreCliente(idCliente: unknown) {
   const clienteId = Number(idCliente);
@@ -28,26 +28,26 @@ async function obtenerNombreCliente(idCliente: unknown) {
   return nombre;
 }
 
-async function obtenerNombreCancha(idCancha: unknown) {
-  const canchaId = Number(idCancha);
+async function obtenerNombreRecurso(idRecurso: unknown) {
+  const recursoId = Number(idRecurso);
 
-  if (!Number.isFinite(canchaId)) {
-    return 'Cancha';
+  if (!Number.isFinite(recursoId)) {
+    return 'Recurso';
   }
 
-  const cacheado = canchaCache.get(canchaId);
+  const cacheado = recursoCache.get(recursoId);
   if (cacheado) {
     return cacheado;
   }
 
   const { data } = await supabase
-    .from('cancha')
+    .from('recurso')
     .select('nombre')
-    .eq('id_cancha', canchaId)
+    .eq('id_recurso', recursoId)
     .maybeSingle();
 
-  const nombre = data?.nombre || `Cancha #${canchaId}`;
-  canchaCache.set(canchaId, nombre);
+  const nombre = data?.nombre || `Recurso #${recursoId}`;
+  recursoCache.set(recursoId, nombre);
   return nombre;
 }
 
@@ -72,28 +72,28 @@ export function useReservasRealtime() {
               : '';
 
             try {
-              const [clienteNombre, canchaNombre] = await Promise.all([
+              const [clienteNombre, recursoNombre] = await Promise.all([
                 obtenerNombreCliente(reserva.id_cliente),
-                obtenerNombreCancha(reserva.id_cancha)
+                obtenerNombreRecurso(reserva.id_recurso)
               ]);
 
               if (estado === 'pendiente') {
-                notifications.warning(`⏳ Reserva pendiente: ${clienteNombre} - ${canchaNombre}${horario}`, { duration: 6000 });
+                notifications.warning(`⏳ Reserva pendiente: ${clienteNombre} - ${recursoNombre}${horario}`, { duration: 6000 });
               } else if (estado === 'confirmada') {
-                notifications.success(`✅ Reserva confirmada: ${clienteNombre} - ${canchaNombre}${horario}`, { duration: 6000 });
+                notifications.success(`✅ Reserva confirmada: ${clienteNombre} - ${recursoNombre}${horario}`, { duration: 6000 });
               } else {
-                notifications.success(`📅 Nueva reserva: ${clienteNombre} - ${canchaNombre}${horario}`, { duration: 6000 });
+                notifications.success(`📅 Nueva reserva: ${clienteNombre} - ${recursoNombre}${horario}`, { duration: 6000 });
               }
             } catch {
               const clienteNombre = `Cliente #${reserva.id_cliente}`;
-              const canchaNombre = `Cancha #${reserva.id_cancha}`;
+              const recursoNombre = `Recurso #${reserva.id_recurso}`;
 
               if (estado === 'pendiente') {
-                notifications.warning(`⏳ Reserva pendiente: ${clienteNombre} - ${canchaNombre}${horario}`, { duration: 6000 });
+                notifications.warning(`⏳ Reserva pendiente: ${clienteNombre} - ${recursoNombre}${horario}`, { duration: 6000 });
               } else if (estado === 'confirmada') {
-                notifications.success(`✅ Reserva confirmada: ${clienteNombre} - ${canchaNombre}${horario}`, { duration: 6000 });
+                notifications.success(`✅ Reserva confirmada: ${clienteNombre} - ${recursoNombre}${horario}`, { duration: 6000 });
               } else {
-                notifications.success(`📅 Nueva reserva: ${clienteNombre} - ${canchaNombre}${horario}`, { duration: 6000 });
+                notifications.success(`📅 Nueva reserva: ${clienteNombre} - ${recursoNombre}${horario}`, { duration: 6000 });
               }
             }
           }

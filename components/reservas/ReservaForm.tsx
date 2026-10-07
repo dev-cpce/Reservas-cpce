@@ -46,17 +46,7 @@ export default function ReservaForm({
   const esRecursoDisponible = (recurso: Recurso) => recurso.activo && recurso.estado === 'DISPONIBLE';
   const [buscandoCliente, setBuscandoCliente] = useState(false);
 
-  console.log('TOTAL CLIENTES RECIBIDOS:', clientes.length);
-
-console.log(
-  'CLIENTES LUCAS:',
-  clientes.filter((cliente) =>
-    `${cliente.nombre || ''} ${cliente.apellido || ''}`
-      .toLowerCase()
-      .includes('lucas')
-  )
-);
-
+  
 useEffect(() => {
   const termino = busquedaCliente.trim();
 

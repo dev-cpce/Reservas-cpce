@@ -19,32 +19,6 @@ export interface ReservaPorDia {
   cantidad: number;
 }
 
-export interface CanchaMasReservada {
-  nombre: string;
-  cantidad: number;
-}
-
-export interface IngresoMensual {
-  mes: string;
-  ingresos: number;
-}
-
-// LEGACY (modelo cancha): se mantiene para no romper otros consumidores existentes.
-export interface HorarioDisponible {
-  id_cancha: number;
-  nombre: string;
-  tipo: string;
-  tarifa_hora: number;
-  disponibilidad_horaria: string;
-  horariosOcupados: string[]; // Rangos completos como "22:00-23:00"
-  horariosOcupadosIndividuales: string[]; // Horarios individuales como "22:00"
-  horariosDisponibles: string[];
-  horariosPasados: string[];
-  canchaEnMantenimiento: boolean;
-  estadoCancha: string;
-  totalHorariosHoy: number;
-}
-
 // Nuevo (modelo recurso): usado por el Dashboard migrado. Slots de 30 min.
 export interface RecursoHorarioDisponible {
   id_recurso: number;
@@ -70,15 +44,4 @@ export interface DiaDisponibilidadRecurso {
   horaCierre: string | null;
   horariosDisponibles: string[];
   horariosOcupados: string[];
-}
-
-export interface ReservaReciente {
-  id_reserva: number;
-  cliente_nombre: string;
-  cancha_nombre: string;
-  fecha_reserva: string;
-  hora_inicio: string;
-  hora_fin: string;
-  estado_reserva: string;
-  costo_reserva: number;
 }

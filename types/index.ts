@@ -2,8 +2,7 @@
 // ============================================================================
 // MODELO NUEVO (Paso 2 de la migración cancha -> recurso).
 // Refleja las tablas `recurso`, `tarifa`, `recurso_horario` y `recurso_bloqueo`
-// que ya existen en Supabase. Conviven con el modelo legacy de `Cancha` hasta
-// que la lógica de negocio se migre en el Paso 3.
+// que ya existen en Supabase.
 // ============================================================================
 
 export interface Recurso {
@@ -54,26 +53,6 @@ export interface RecursoBloqueo {
     created_at: string;
 }
 
-// ============================================================================
-// LEGACY (Paso 2): modelo anterior de "cancha".
-// Se deja intacto a propósito -sin alias a Recurso- porque sus campos
-// (tarifa_hora, estado_cancha, tipo, etc.) no existen en Recurso y varios
-// componentes/actions todavía dependen de esta forma exacta. Se elimina en el Paso 3.
-// @deprecated usar `Recurso` para código nuevo.
-// ============================================================================
-export interface Cancha {
-    id_cancha: number;
-    nombre: string;
-    tipo: string;
-    disponibilidad_horaria?: string;
-    estado?: string;
-    tarifa_hora: number;
-    nombre_cancha?: string;
-    tipo_cancha?: string;
-    estado_cancha?: 'disponible' | 'no disponible' | 'mantenimiento';
-    created_at?: string;
-}
-
 export interface Cliente {
     id_cliente: number;
     nombre: string;
@@ -93,14 +72,9 @@ export interface Reserva {
     hora_fin: string;
     estado_reserva: string;
     id_cliente: number;
-    // LEGACY (Paso 2): se mantiene requerido -tal cual estaba- para no romper
-    // actions.ts ni los componentes que ya lo usan como número obligatorio.
-    // Se migrará a `id_recurso` en el Paso 3.
-    id_cancha: number;
     costo_reserva: number;
     created_at?: string;
 
-    // Nuevo modelo (Paso 2): conviven con id_cancha/cancha hasta el Paso 3.
     id_recurso?: number | null;
     recurso?: Recurso;
     duracion_minutos?: number | null;
@@ -109,11 +83,8 @@ export interface Reserva {
     costo_total?: number;
     observaciones?: string;
     cliente?: Cliente;
-    // LEGACY: cancha/cancha_id duplican id_cancha, se mantienen por compatibilidad.
-    cancha?: Cancha;
     fecha?: string;
     cliente_id?: number;
-    cancha_id?: number;
 }
 
 export interface Pago {

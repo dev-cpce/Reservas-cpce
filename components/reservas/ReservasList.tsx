@@ -174,7 +174,7 @@ export const ReservasList = ({
                     {reserva.cliente ? `${reserva.cliente.nombre} ${reserva.cliente.apellido}` : '-'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {reserva.recurso?.nombre || reserva.cancha?.nombre || '-'}
+                    {reserva.recurso?.nombre || '-'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                     ${(reserva.costo_reserva || reserva.costo_total || 0).toFixed(2)}

@@ -64,13 +64,6 @@ interface UserContextBody {
 
   accion_pendiente?: string | null;
 
-  /*
-   * Campos legacy.
-   * Se mantienen temporalmente para no romper
-   * nodos antiguos durante la migración.
-   */
-  tipo_cancha?: string | null;
-  cancha_nro?: string | number | null;
 }
 
 /* ============================================================
@@ -152,8 +145,6 @@ export async function GET(request: NextRequest) {
     duracion_minutos,
     id_reserva,
     accion_pendiente,
-    tipo_cancha,
-    cancha_nro,
     updated_at
     `
     )
@@ -258,24 +249,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    /* ========================================================
-       CAMPOS LEGACY
-       
-       Se mantienen temporalmente para compatibilidad.
-       Cuando usamos el nuevo modelo, los limpiamos para
-       evitar que el contexto tenga información contradictoria.
-    ======================================================== */
-
-    const tipo_cancha =
-      id_recurso !== null
-        ? null
-        : cleanValue(body.tipo_cancha);
-
-    const cancha_nro =
-      id_recurso !== null
-        ? null
-        : cleanNumber(body.cancha_nro);
-
+  
     /* ========================================================
        UPSERT
     ======================================================== */
@@ -295,12 +269,6 @@ export async function POST(request: NextRequest) {
           id_reserva,
 
           accion_pendiente,
-
-          /*
-           * Legacy
-           */
-          tipo_cancha,
-          cancha_nro,
 
           updated_at: new Date().toISOString(),
         },

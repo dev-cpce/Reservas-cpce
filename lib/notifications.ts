@@ -1,4 +1,4 @@
-﻿import toast from 'react-hot-toast';
+import toast from 'react-hot-toast';
 
 // Tipos para las notificaciones
 export type NotificationType = 'success' | 'error' | 'loading' | 'info' | 'warning';
@@ -209,9 +209,9 @@ export const notifications = NotificationManager.getInstance();
 // Notificaciones específicas para eventos de Realtime
 export const realtimeNotifications = {
   // Reservas
-  nuevaReserva: (clienteNombre: string, cancha: string, horario: string) => {
+  nuevaReserva: (clienteNombre: string, recurso: string, horario: string) => {
     notifications.success(
-      `Nueva reserva: ${clienteNombre} - ${cancha} (${horario})`,
+      `Nueva reserva: ${clienteNombre} - ${recurso} (${horario})`,
       {
         icon: '📅',
         duration: 10000,
@@ -219,9 +219,9 @@ export const realtimeNotifications = {
     );
   },
 
-  reservaActualizada: (clienteNombre: string, cancha: string, nuevoEstado: string) => {
+  reservaActualizada: (clienteNombre: string, recurso: string, nuevoEstado: string) => {
     notifications.info(
-      `Reserva actualizada: ${clienteNombre} - ${cancha} → ${nuevoEstado}`,
+      `Reserva actualizada: ${clienteNombre} - ${recurso} → ${nuevoEstado}`,
       {
         icon: '✏️',
         duration: 10000,
@@ -239,37 +239,6 @@ export const realtimeNotifications = {
       mensaje,
       {
         icon: '❌',
-        duration: 10000,
-      }
-    );
-  },
-
-  // Canchas
-  nuevaCancha: (nombreCancha: string) => {
-    notifications.success(
-      `Nueva cancha agregada: ${nombreCancha}`,
-      {
-        icon: '🏟️',
-        duration: 10000,
-      }
-    );
-  },
-
-  canchaActualizada: (nombreCancha: string, cambio: string) => {
-    notifications.info(
-      `Cancha actualizada: ${nombreCancha} - ${cambio}`,
-      {
-        icon: '🔧',
-        duration: 10000,
-      }
-    );
-  },
-
-  canchaEliminada: (nombreCancha: string) => {
-    notifications.warning(
-      `Cancha eliminada: ${nombreCancha}`,
-      {
-        icon: '🗑️',
         duration: 10000,
       }
     );

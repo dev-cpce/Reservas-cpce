@@ -27,31 +27,34 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const tipo = searchParams.get('tipo'); // 'canchas', 'deportes', 'horarios', 'precios'
+    const tipo = searchParams.get('tipo'); // 'recursos', 'deportes', 'horarios', 'precios'
 
     switch (tipo) {
-      case 'canchas':
-        const { data: canchas } = await supabase
-          .from('cancha')
-          .select('id_cancha, nombre, tipo_deporte, precio_hora, estado')
-          .eq('estado', 'disponible')
+      case 'recursos':
+        const { data: recursos } = await supabase
+          .from('recurso')
+          .select('id_recurso, nombre, tipo_recurso, deporte, estado')
+          .eq('activo', true)
+          .eq('estado', 'DISPONIBLE')
           .order('nombre');
 
         return NextResponse.json<ApiResponse>({
           success: true,
           data: {
-            canchas: canchas || [],
-            total: canchas?.length || 0
+            recursos: recursos || [],
+            total: recursos?.length || 0
           }
         });
 
       case 'deportes':
         const { data: deportes } = await supabase
-          .from('cancha')
-          .select('tipo_deporte')
-          .eq('estado', 'disponible');
+          .from('recurso')
+          .select('deporte')
+          .eq('activo', true)
+          .eq('estado', 'DISPONIBLE')
+          .not('deporte', 'is', null);
 
-        const deportesUnicos = [...new Set(deportes?.map(d => d.tipo_deporte) || [])];
+        const deportesUnicos = [...new Set(deportes?.map(d => d.deporte) || [])];
 
         return NextResponse.json<ApiResponse>({
           success: true,
@@ -78,20 +81,24 @@ export async function GET(request: NextRequest) {
 
       case 'precios':
         const { data: precios } = await supabase
-          .from('cancha')
-          .select('tipo_deporte, precio_hora')
-          .eq('estado', 'disponible');
+          .from('tarifa')
+          .select('precio, recurso!inner(deporte)')
+          .eq('activo', true)
+          .eq('recurso.activo', true);
 
-        const preciosPorDeporte = precios?.reduce((acc, cancha) => {
-          if (!acc[cancha.tipo_deporte]) {
-            acc[cancha.tipo_deporte] = {
-              precio_min: cancha.precio_hora,
-              precio_max: cancha.precio_hora,
-              precio_promedio: cancha.precio_hora
+        const preciosPorDeporte = precios?.reduce((acc, tarifa) => {
+          const recurso = Array.isArray(tarifa.recurso) ? tarifa.recurso[0] : tarifa.recurso;
+          const deporte = recurso?.deporte;
+          if (!deporte) return acc;
+          if (!acc[deporte]) {
+            acc[deporte] = {
+              precio_min: tarifa.precio,
+              precio_max: tarifa.precio,
+              precio_promedio: tarifa.precio
             };
           } else {
-            acc[cancha.tipo_deporte].precio_min = Math.min(acc[cancha.tipo_deporte].precio_min, cancha.precio_hora);
-            acc[cancha.tipo_deporte].precio_max = Math.max(acc[cancha.tipo_deporte].precio_max, cancha.precio_hora);
+            acc[deporte].precio_min = Math.min(acc[deporte].precio_min, tarifa.precio);
+            acc[deporte].precio_max = Math.max(acc[deporte].precio_max, tarifa.precio);
           }
           return acc;
         }, {} as Record<string, { precio_min: number; precio_max: number; precio_promedio: number }>);
@@ -107,14 +114,15 @@ export async function GET(request: NextRequest) {
       default:
         // Información general
         const [
-          { data: totalCanchas },
+          { data: totalRecursos },
           { data: totalClientes },
           { data: reservasHoy }
         ] = await Promise.all([
           supabase
-            .from('cancha')
-            .select('id_cancha', { count: 'exact' })
-            .eq('estado', 'disponible'),
+            .from('recurso')
+            .select('id_recurso', { count: 'exact' })
+            .eq('activo', true)
+            .eq('estado', 'DISPONIBLE'),
           supabase
             .from('cliente')
             .select('id_cliente', { count: 'exact' }),
@@ -128,14 +136,14 @@ export async function GET(request: NextRequest) {
           success: true,
           data: {
             informacion_general: {
-              canchas_disponibles: totalCanchas?.length || 0,
+              recursos_disponibles: totalRecursos?.length || 0,
               clientes_registrados: totalClientes?.length || 0,
               reservas_hoy: reservasHoy?.length || 0,
               horario_atencion: '08:00 - 22:00',
               estado_sistema: 'Operativo'
             },
             endpoints_disponibles: [
-              'GET /api/external/info?tipo=canchas - Lista de canchas',
+              'GET /api/external/info?tipo=recursos - Lista de recursos',
               'GET /api/external/info?tipo=deportes - Tipos de deporte',
               'GET /api/external/info?tipo=horarios - Horarios disponibles',
               'GET /api/external/info?tipo=precios - Precios por deporte',

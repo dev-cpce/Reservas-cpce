@@ -5,14 +5,13 @@ import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { revalidatePath } from 'next/cache';
 
-import { Reserva, Recurso, NuevaReservaRecursoInput } from '@/types';
+import { Recurso, NuevaReservaRecursoInput } from '@/types';
 import {
   DURACIONES_VALIDAS_MINUTOS,
   esDuracionValida,
   calcularHoraFinPorDuracion,
   haySolapamientoDeHorarios,
   reservaBloqueaRecurso,
-  calcularFechaExpiracionPago,
   horaAMinutos
 } from '@/lib/recursoDisponibilidad';
 import { tienePermisoUsuario } from '@/lib/auth/tienePermisoUsuario';
@@ -25,19 +24,16 @@ function obtenerFechaLocal(fecha: Date): string {
 
 async function cargarRelacionesReservas(
   supabase: ReturnType<typeof createServerComponentClient>,
-  reservas: Array<{ id_cliente: number; id_cancha: number; id_recurso?: number | null }>
+  reservas: Array<{ id_cliente: number; id_recurso?: number | null }>
 ) {
   const clientes = new Map<number, { nombre: string; apellido: string | null }>();
-  const canchas = new Map<number, { nombre: string }>();
-  // Nuevo (Paso 3): resuelve el nombre del recurso para las reservas ya migradas.
   const recursos = new Map<number, { nombre: string }>();
 
-  // id_cancha/id_recurso pueden ser NULL (Number(null) === 0 es finito, por eso se
+  // id_recurso puede ser NULL (Number(null) === 0 es finito, por eso se
   // excluyen null/undefined explícitamente en vez de confiar solo en Number.isFinite).
   const esIdValido = (id: unknown): id is number => typeof id === 'number' && Number.isFinite(id);
 
   const idsCliente = Array.from(new Set(reservas.map(reserva => reserva.id_cliente).filter(esIdValido)));
-  const idsCancha = Array.from(new Set(reservas.map(reserva => reserva.id_cancha).filter(esIdValido)));
   const idsRecurso = Array.from(new Set(reservas.map(reserva => reserva.id_recurso).filter(esIdValido)));
 
   if (idsCliente.length > 0) {
@@ -50,19 +46,6 @@ async function cargarRelacionesReservas(
       clientes.set(cliente.id_cliente, {
         nombre: cliente.nombre,
         apellido: cliente.apellido
-      });
-    });
-  }
-
-  if (idsCancha.length > 0) {
-    const { data } = await supabase
-      .from('cancha')
-      .select('id_cancha, nombre')
-      .in('id_cancha', idsCancha);
-
-    data?.forEach(cancha => {
-      canchas.set(cancha.id_cancha, {
-        nombre: cancha.nombre
       });
     });
   }
@@ -80,7 +63,7 @@ async function cargarRelacionesReservas(
     });
   }
 
-  return { clientes, canchas, recursos };
+  return { clientes, recursos };
 }
 
 const verificarConectividad = async (supabase: ReturnType<typeof createServerComponentClient>) => {
@@ -93,192 +76,6 @@ const verificarConectividad = async (supabase: ReturnType<typeof createServerCom
   } catch (error) {
     throw error;
   }
-};
-
-const validarHoraReserva = (horaInicio: string, horaFin: string) => {
-  if (horaFin === '00:00') {
-    return true;
-  }
-  
-  const inicio = new Date(`1970-01-01T${horaInicio}:00`);
-  const fin = new Date(`1970-01-01T${horaFin}:00`);
-  
-  if (inicio >= fin) {
-    throw new Error('La hora de fin debe ser posterior a la hora de inicio');
-  }
-  const diferenciaMs = fin.getTime() - inicio.getTime();
-  const diferenciaHoras = diferenciaMs / (1000 * 60 * 60);
-  
-  if (diferenciaHoras < 1) {
-    throw new Error('La reserva debe ser de al menos 1 hora');
-  }
-  
-  return true;
-};
-
-// Función para verificar disponibilidad (sin conflictos)
-const verificarDisponibilidad = async (
-  fecha: string, 
-  horaInicio: string, 
-  horaFin: string, 
-  idCancha: number, 
-  idReserva?: number
-) => {
-  const supabase = createServerComponentClient({ cookies });
-  
-  // Validar horas
-  validarHoraReserva(horaInicio, horaFin);
-
-  let query = supabase
-    .from('reserva')
-    .select('*');
-    
-  // Intentar diferentes nombres de columna para cancha
-  try {
-    query = query.eq('id_cancha', idCancha);
-  } catch {
-    try {
-      query = query.eq('cancha_id', idCancha);
-    } catch {
-    }
-  }
-
-  try {
-    query = query.eq('fecha_reserva', fecha);
-  } catch {
-    // Si no funciona, intentar con 'fecha' como fallback
-    try {
-      query = query.eq('fecha', fecha);
-    } catch {
-      // Si no funciona ninguno, continuar sin filtro de fecha
-    }
-  }
-    
-  // Filtrar por estados que no sean cancelados
-  query = query.neq('estado_reserva', 'cancelada');
-  
-  // Si estamos actualizando, excluir la reserva actual
-  if (idReserva) {
-    query = query.neq('id_reserva', idReserva);
-  }
-  
-  const { data: reservasExistentes, error } = await query;
-  
-  if (error) {
-    throw new Error(`Error al verificar disponibilidad: ${error.message}`);
-  }
-
-  // Función para normalizar formatos de hora (remover segundos si existen)
-  const normalizarHora = (hora: string) => {
-    if (hora.includes(':')) {
-      const partes = hora.split(':');
-      return `${partes[0]}:${partes[1]}`;  // Solo HH:MM
-    }
-    return hora;
-  };
-
-  if (reservasExistentes && reservasExistentes.length > 0) {
-    const conflictos = reservasExistentes.filter(reserva => {
-      // Convertir horas a minutos desde medianoche para comparación correcta
-      const horaAMinutos = (hora: string): number => {
-        const [hh, mm] = hora.split(':').map(Number);
-        // Si es 00:00, considerarlo como 24:00 (1440 minutos)
-        if (hh === 0 && mm === 0) {
-          return 24 * 60; // 1440 minutos = medianoche del día siguiente
-        }
-        return hh * 60 + mm;
-      };
-      
-      const inicioReservaExistente = normalizarHora(reserva.hora_inicio);
-      const finReservaExistente = normalizarHora(reserva.hora_fin);
-      const inicioNuevaReserva = normalizarHora(horaInicio);
-      const finNuevaReserva = normalizarHora(horaFin);
-      
-      // Convertir a minutos para comparación numérica correcta
-      const inicioExistenteMin = horaAMinutos(inicioReservaExistente);
-      const finExistenteMin = horaAMinutos(finReservaExistente);
-      const inicioNuevoMin = horaAMinutos(inicioNuevaReserva);
-      const finNuevoMin = horaAMinutos(finNuevaReserva);
-
-      // Dos intervalos se solapan si: max(inicio1, inicio2) < min(fin1, fin2)
-      const inicioSolapamiento = Math.max(inicioNuevoMin, inicioExistenteMin);
-      const finSolapamiento = Math.min(finNuevoMin, finExistenteMin);
-      const hayConflicto = inicioSolapamiento < finSolapamiento;
-
-      return hayConflicto;
-    });
-    
-    if (conflictos.length > 0) {
-      const conflictoDetalle = conflictos.map(c => 
-        `${normalizarHora(c.hora_inicio)}-${normalizarHora(c.hora_fin)}`
-      ).join(', ');
-      
-      throw new Error(`Conflicto de horarios: Ya existe una reserva en ${conflictoDetalle}. El horario ${normalizarHora(horaInicio)}-${normalizarHora(horaFin)} se solapa con esta reserva existente.`);
-    }
-  }
-  
-  return true;
-};
-
-// Obtener reservas existentes para una cancha en una fecha específica
-export async function obtenerReservasPorFechaYCancha(fecha: string, idCancha: number) {
-  try {
-    const supabase = createServerComponentClient({ cookies });
-    
-    const { data, error } = await supabase
-      .from('reserva')
-      .select('hora_inicio, hora_fin, estado_reserva')
-      .eq('fecha_reserva', fecha)
-      .eq('id_cancha', idCancha)
-      .in('estado_reserva', ['confirmada', 'pendiente']); // Solo reservas activas
-    
-    if (error) {
-            return [];
-    }
-
-    return data || [];
-  } catch {
-        return [];
-  }
-}
-
-// Función para calcular el costo total de la reserva (no se guarda en BD)
-export const calcularCostoReserva = async (
-  idCancha: number, 
-  horaInicio: string, 
-  horaFin: string
-): Promise<number> => {
-  const supabase = createServerComponentClient({ cookies });
-  
-  // Obtener la tarifa de la cancha
-  const { data: cancha, error } = await supabase
-    .from('cancha')
-    .select('tarifa_hora')
-    .eq('id_cancha', idCancha)
-    .single();
-  
-  if (error || !cancha) {
-        return 0;
-  }
-  
-  // Calcular la duración en horas (manejar reservas que terminan a las 00:00)
-  let diferenciaHoras: number;
-  
-  if (horaFin === '00:00') {
-    // Caso especial: reservas que terminan a medianoche (cruzan al día siguiente)
-    const inicioHora = parseInt(horaInicio.split(':')[0]);
-    diferenciaHoras = 24 - inicioHora; // Ej: 22:00 a 00:00 = 24 - 22 = 2 horas
-  } else {
-    const inicio = new Date(`1970-01-01T${horaInicio}:00`);
-    const fin = new Date(`1970-01-01T${horaFin}:00`);
-    const diferenciaMs = fin.getTime() - inicio.getTime();
-    diferenciaHoras = diferenciaMs / (1000 * 60 * 60);
-  }
-  
-  // Calcular el costo total
-  const costoTotal = Math.round(diferenciaHoras * cancha.tarifa_hora * 100) / 100;
-  
-  return costoTotal;
 };
 
 // Obtener todas las reservas
@@ -299,152 +96,17 @@ export async function obtenerReservas() {
     }
 
     const filas = reservas || [];
-    const { clientes, canchas, recursos } = await cargarRelacionesReservas(supabase, filas);
+    const { clientes, recursos } = await cargarRelacionesReservas(supabase, filas);
 
     return filas.map(reserva => ({
       ...reserva,
       cliente: clientes.get(reserva.id_cliente) || null,
-      cancha: canchas.get(reserva.id_cancha) || null,
       recurso: recursos.get(reserva.id_recurso) || null
     }));
     
   } catch (error) {
         throw new Error('Error al cargar las reservas: ' + (error as Error).message);
   }
-}
-
-// Crear una nueva reserva
-export async function crearReserva(reserva: Omit<Reserva, 'id_reserva'>) {
-  const supabase = createServerComponentClient({ cookies });
-  
-
-  
-  // Verificar disponibilidad usando el nombre correcto de campo
-  await verificarDisponibilidad(
-    reserva.fecha_reserva || reserva.fecha || '',
-    reserva.hora_inicio,
-    reserva.hora_fin,
-    reserva.id_cancha
-  );
-  
-  // Calcular el costo de la reserva
-  const costoReserva = await calcularCostoReserva(
-    reserva.id_cancha,
-    reserva.hora_inicio,
-    reserva.hora_fin
-  );
-  
-  const reservaParaInsertar = {
-    fecha_reserva: reserva.fecha_reserva || reserva.fecha,
-    hora_inicio: reserva.hora_inicio,
-    hora_fin: reserva.hora_fin,
-    estado_reserva: 'pendiente',
-    id_cliente: reserva.id_cliente,
-    id_cancha: reserva.id_cancha,
-    costo_reserva: costoReserva
-  };
-  
-
-  
-  // Crear la reserva
-  const { data, error } = await supabase
-    .from('reserva')
-    .insert(reservaParaInsertar)
-    .select('id_reserva')
-    .single();
-  
-  if (error) {
-        throw new Error(`Error al crear la reserva: ${error.message}`);
-  }
-  
-  revalidatePath('/reservas');
-  return data.id_reserva;
-}
-
-// Actualizar una reserva existente
-export async function actualizarReserva(
-  id: number, 
-  reserva: Omit<Reserva, 'id_reserva'>
-) {
-  const supabase = createServerComponentClient({ cookies });
-  
-  // Verificar disponibilidad usando el nombre correcto de campo
-  await verificarDisponibilidad(
-    reserva.fecha_reserva || reserva.fecha || '',
-    reserva.hora_inicio,
-    reserva.hora_fin,
-    reserva.id_cancha,
-    id
-  );
-  
-  // Recalcular el costo si cambió la cancha o las horas
-  const costoReserva = await calcularCostoReserva(
-    reserva.id_cancha,
-    reserva.hora_inicio,
-    reserva.hora_fin
-  );
-  
-  const reservaParaActualizar: Partial<{
-    fecha_reserva: string;
-    hora_inicio: string;
-    hora_fin: string;
-    estado_reserva: string;
-    id_cliente: number;
-    id_cancha: number;
-    costo_reserva: number;
-  }> = {};
-  
-  if (reserva.fecha_reserva || reserva.fecha) {
-    reservaParaActualizar.fecha_reserva = reserva.fecha_reserva || reserva.fecha;
-  }
-  if (reserva.hora_inicio) reservaParaActualizar.hora_inicio = reserva.hora_inicio;
-  if (reserva.hora_fin) reservaParaActualizar.hora_fin = reserva.hora_fin;
-  if (reserva.estado_reserva) {
-    reservaParaActualizar.estado_reserva = reserva.estado_reserva;
-  }
-  if (reserva.id_cliente) reservaParaActualizar.id_cliente = reserva.id_cliente;
-  if (reserva.id_cancha) reservaParaActualizar.id_cancha = reserva.id_cancha;
-  
-  // Siempre actualizar el costo cuando se actualiza una reserva
-  reservaParaActualizar.costo_reserva = costoReserva;
-  
-
-  
-  // Actualizar la reserva
-  const { error } = await supabase
-    .from('reserva')
-    .update(reservaParaActualizar)
-    .eq('id_reserva', id);
-  
-  if (error) {
-        throw new Error(`Error al actualizar la reserva: ${error.message}`);
-  }
-  
-  revalidatePath('/reservas');
-  return true;
-}
-
-// Eliminar una reserva
-export async function eliminarReserva(id: number) {
-  const permitido = await tienePermisoUsuario('reservas.eliminar');
-
-  if (!permitido) {
-    throw new Error('No tenés permisos para eliminar reservas.');
-  }
-
-  const supabase = createServerComponentClient({ cookies });
-
-  const { error } = await supabase
-    .from('reserva')
-    .delete()
-    .eq('id_reserva', id);
-
-  if (error) {
-    throw new Error('Error al eliminar la reserva  - Permisos insuficientes');
-  }
-
-  revalidatePath('/reservas');
-  return true;
 }
 
 // Cambiar el estado de una reserva
@@ -498,113 +160,6 @@ export async function cambiarEstadoReserva(id: number, estado: string) {
   return true;
 }
 
-// Buscar reservas
-export async function buscarReservas(query: string) {
-  try {
-    const supabase = createServerComponentClient({ cookies });
-    const { data: reservas, error } = await supabase
-      .from('reserva')
-      .select('*');
-      
-    if (error) {
-            throw new Error('Error al buscar reservas: ' + error.message);
-    }
-
-    const reservasFiltradas = (reservas || []).filter(reserva => {
-      const queryLower = query.toLowerCase();
-      return (
-        (reserva.fecha_reserva && reserva.fecha_reserva.includes(query)) ||
-        (reserva.fecha && reserva.fecha.includes(query)) ||  // fallback
-        (reserva.id_reserva && reserva.id_reserva.toString().includes(query)) ||
-        (reserva.observaciones && reserva.observaciones.toLowerCase().includes(queryLower))
-      );
-    });
-
-    const { clientes, canchas, recursos } = await cargarRelacionesReservas(supabase, reservasFiltradas);
-
-    return reservasFiltradas.map(reserva => ({
-      ...reserva,
-      cliente: clientes.get(reserva.id_cliente) || null,
-      cancha: canchas.get(reserva.id_cancha) || null,
-      recurso: recursos.get(reserva.id_recurso) || null
-    }));
-  } catch (error) {
-        throw new Error('Error al buscar reservas: ' + (error as Error).message);
-  }
-}
-
-// Función de prueba simple para verificar acceso a base de datos
-export async function verificarBaseDatos() {
-  try {
-    const supabase = createServerComponentClient({ cookies });
-    
-    // Verificar conectividad y sesión
-    await verificarConectividad(supabase);
-    
-    const resultado = {
-      cliente: { existe: false, estructura: null as string[] | null, error: null as string | null },
-      reserva: { existe: false, estructura: null as string[] | null, error: null as string | null },
-      cancha: { existe: false, estructura: null as string[] | null, error: null as string | null }
-    };
-    
-    // Verificar tabla cliente
-    try {
-      const { data: clienteData, error: clienteError } = await supabase
-        .from('cliente')
-        .select('*')
-        .limit(1);
-      
-      if (clienteError) {
-        resultado.cliente.error = clienteError.message;
-      } else {
-        resultado.cliente.existe = true;
-        resultado.cliente.estructura = clienteData?.[0] ? Object.keys(clienteData[0]) : [];
-      }
-    } catch (error) {
-      resultado.cliente.error = (error as Error).message;
-    }
-    
-    // Verificar tabla reserva
-    try {
-      const { data: reservaData, error: reservaError } = await supabase
-        .from('reserva')
-        .select('*')
-        .limit(1);
-      
-      if (reservaError) {
-        resultado.reserva.error = reservaError.message;
-      } else {
-        resultado.reserva.existe = true;
-        resultado.reserva.estructura = reservaData?.[0] ? Object.keys(reservaData[0]) : [];
-      }
-    } catch (error) {
-      resultado.reserva.error = (error as Error).message;
-    }
-    
-    // Verificar tabla cancha
-    try {
-      const { data: canchaData, error: canchaError } = await supabase
-        .from('cancha')
-        .select('*')
-        .limit(1);
-      
-      if (canchaError) {
-        resultado.cancha.error = canchaError.message;
-      } else {
-        resultado.cancha.existe = true;
-        resultado.cancha.estructura = canchaData?.[0] ? Object.keys(canchaData[0]) : [];
-      }
-    } catch (error) {
-      resultado.cancha.error = (error as Error).message;
-    }
-    
-
-    return { success: true, data: resultado, message: 'Diagnóstico completado' };
-  } catch (error) {
-        return { success: false, error: (error as Error).message };
-  }
-}
-
 // Obtener clientes activos para el formulario
 export async function obtenerClientesActivos() {
   try {
@@ -634,260 +189,6 @@ export async function obtenerClientesActivos() {
     return clientesActivos;
   } catch (error) {
         throw new Error('Error al cargar los clientes activos: ' + (error as Error).message);
-  }
-}
-
-// Obtener canchas disponibles para el formulario
-export async function obtenerCanchasDisponibles() {
-  try {
-    const supabase = createServerComponentClient({ cookies });
-    await verificarConectividad(supabase);
-
-    const { data: canchas, error } = await supabase
-      .from('cancha')
-      .select('*');
-    
-    if (error) {
-            // Si la tabla no existe, proporcionar un mensaje más específico
-      if (error.message.includes('relation') && error.message.includes('does not exist')) {
-        throw new Error('La tabla "cancha" no existe en la base de datos. Por favor, crea la estructura de la base de datos.');
-      }
-      
-      throw new Error('Error al cargar las canchas: ' + error.message);
-    }
-
-    const canchasDisponibles = canchas?.filter(cancha => {
-      const estado = cancha.estado?.toLowerCase();
-      const estadosNoDisponibles = [
-        'no disponible', 
-        'en mantenimiento', 
-        'mantenimiento',
-        'fuera de servicio',
-        'inactiva',
-        'inactivo',
-        'cerrada',
-        'cerrado'
-      ];
-      if (estado && estadosNoDisponibles.includes(estado)) {
-        return false;
-      }
-      if (!estado) return true;
-      return estado === 'disponible' || estado === 'activa' || estado === 'activo';
-    }) || [];
-
-    const canchasOrdenadas = canchasDisponibles.sort((a, b) => {
-      const nombreA = a.nombre || `Cancha ${a.id_cancha}`;
-      const nombreB = b.nombre || `Cancha ${b.id_cancha}`;
-      return nombreA.localeCompare(nombreB);
-    });
-    
-
-    return canchasOrdenadas;
-  } catch (error) {
-        throw new Error('Error al cargar las canchas: ' + (error as Error).message);
-  }
-}
-
-export async function obtenerEstadisticasDashboard() {
-  try {
-    const supabase = createServerComponentClient({ cookies });
-    
-    // Obtener fecha actual en Buenos Aires (UTC-3)
-    const ahoraUTC = new Date();
-    const hoy = new Date(ahoraUTC.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
-    const fechaHoy = obtenerFechaLocal(hoy);
-    
-    const inicioDelMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
-    const finDelMes = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
-    
-    const inicioMesStr = obtenerFechaLocal(inicioDelMes);
-    const finMesStr = obtenerFechaLocal(finDelMes);
-    const { data: reservasConfirmadas, error: errorConfirmadas } = await supabase
-      .from('reserva')
-      .select('id_reserva, estado_reserva, fecha_reserva')
-      .eq('estado_reserva', 'confirmada')
-      .eq('fecha_reserva', fechaHoy);
-    
-    if (errorConfirmadas) {
-          }
-    const { data: reservasPendientes, error: errorPendientes } = await supabase
-      .from('reserva')
-      .select('id_reserva, estado_reserva, fecha_reserva')
-      .eq('estado_reserva', 'pendiente')
-      .eq('fecha_reserva', fechaHoy);
-    
-    if (errorPendientes) {
-          }
-    const { error: errorIngresos } = await supabase
-      .from('reserva')
-      .select('id_reserva, costo_reserva, estado_reserva, fecha_reserva')
-      .eq('fecha_reserva', fechaHoy)
-      .neq('estado_reserva', 'cancelada');
-    
-    if (errorIngresos) {
-          }
-    
-
-    
-    const { data: pagosHoy, error: errorPagos } = await supabase
-      .from('pago')
-      .select('monto, fecha_pago')
-      .eq('estado_pago', 'aprobado');
-    
-    if (errorPagos) {
-      // Error silencioso
-    }
-    
-    const ingresosDiarios = pagosHoy?.filter(pago => {
-      if (!pago.fecha_pago) return false;
-      
-      try {
-        // timestamptz se maneja directamente
-        const fecha = new Date(pago.fecha_pago);
-        
-        // Validar fecha válida
-        if (isNaN(fecha.getTime())) return false;
-        
-        const opciones = {
-          timeZone: 'America/Argentina/Buenos_Aires',
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit'
-        } as const;
-        
-        const fechaPagoBuenosAires = new Intl.DateTimeFormat('sv-SE', opciones).format(fecha);
-        return fechaPagoBuenosAires === fechaHoy;
-      } catch {
-        return false;
-      }
-    }).reduce((total, pago) => {
-      return total + (pago.monto || 0);
-    }, 0) || 0;
-    
-
-    
-    // Reservas mensuales e ingresos
-    const { data: reservasMensuales } = await supabase
-      .from('reserva')
-      .select('fecha_reserva')
-      .gte('fecha_reserva', inicioMesStr)
-      .lte('fecha_reserva', finMesStr)
-      .neq('estado_reserva', 'cancelada');
-    
-    const { data: pagosMensuales, error: errorPagosMensuales } = await supabase
-      .from('pago')
-      .select('monto, fecha_pago')
-      .eq('estado_pago', 'aprobado');
-    
-    if (errorPagosMensuales) {
-      // Error silencioso
-    }
-    
-    const ingresosMensuales = pagosMensuales?.filter(pago => {
-      if (!pago.fecha_pago) return false;
-      
-      try {
-        // timestamptz se maneja directamente
-        const fecha = new Date(pago.fecha_pago);
-        
-        // Validar fecha válida
-        if (isNaN(fecha.getTime())) return false;
-        
-        const opciones = {
-          timeZone: 'America/Argentina/Buenos_Aires',
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit'
-        } as const;
-        
-        const fechaPagoBuenosAires = new Intl.DateTimeFormat('sv-SE', opciones).format(fecha);
-        return fechaPagoBuenosAires >= inicioMesStr && fechaPagoBuenosAires <= finMesStr;
-      } catch {
-        return false;
-      }
-    }).reduce((total, pago) => 
-      total + (pago.monto || 0), 0) || 0;
-    const { data: canchas, error: errorCanchas } = await supabase
-      .from('cancha')
-      .select('id_cancha, estado_cancha');
-    
-    if (errorCanchas) {
-          }
-    
-
-    
-    const canchasDisponibles = canchas?.filter(cancha => {
-      const estado = cancha.estado_cancha?.toLowerCase();
-
-      return estado === 'disponible';
-    }).length || 0;
-    
-
-    
-    // Clientes activos (con reservas este mes)
-    const { data: clientesActivos, error: errorClientes } = await supabase
-      .from('reserva')
-      .select('id_cliente, fecha_reserva')
-      .gte('fecha_reserva', inicioMesStr)
-      .lte('fecha_reserva', finMesStr)
-      .neq('estado_reserva', 'cancelada');
-    
-    if (errorClientes) {
-          }
-    
-    const clientesUnicos = new Set(clientesActivos?.map(r => r.id_cliente)).size;
-
-    
-
-
-    
-    return {
-      reservasConfirmadas: reservasConfirmadas?.length || 0,
-      reservasPendientes: reservasPendientes?.length || 0,
-      ingresosDiarios,
-      ingresosMensuales,
-      canchasDisponibles,
-      totalCanchas: canchas?.length || 0,
-      clientesActivos: clientesUnicos,
-      totalReservasMensuales: reservasMensuales?.length || 0
-    };
-  } catch {
-        return {
-      reservasConfirmadas: 0,
-      reservasPendientes: 0,
-      ingresosDiarios: 0,
-      ingresosMensuales: 0,
-      canchasDisponibles: 0,
-      totalCanchas: 0,
-      clientesActivos: 0,
-      totalReservasMensuales: 0
-    };
-  }
-}
-
-
-// Obtener datos para gráfico de reservas por horario
-export async function obtenerReservasPorHorario() {
-  try {
-    const supabase = createServerComponentClient({ cookies });
-    const { data: reservas } = await supabase
-      .from('reserva')
-      .select('hora_inicio')
-      .neq('estado_reserva', 'cancelada');
-    
-    const horarios: { [key: string]: number } = {};
-    
-    reservas?.forEach(reserva => {
-      const hora = reserva.hora_inicio.substring(0, 2) + ':00';
-      horarios[hora] = (horarios[hora] || 0) + 1;
-    });
-    
-    // Convertir a array ordenado
-    return Object.entries(horarios)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([hora, cantidad]) => ({ hora, cantidad }));
-  } catch {
-        return [];
   }
 }
 
@@ -933,314 +234,6 @@ export async function obtenerReservasPorDiaSemana() {
     return dias.map(dia => ({ dia, cantidad: 0 }));
   }
 }
-
-// Obtener canchas más reservadas
-export async function obtenerCanchasMasReservadas() {
-  try {
-    const supabase = createServerComponentClient({ cookies });
-    
-    // Obtener fecha actual en Argentina (UTC-3)
-    const ahora = new Date();
-    const horaArgentina = new Date(ahora.getTime() - (3 * 60 * 60 * 1000)); // UTC-3
-    
-    // Calcular el lunes de la semana actual
-    const diaSemana = horaArgentina.getDay(); // 0 = domingo, 1 = lunes, etc.
-    const diasHastaLunes = diaSemana === 0 ? 6 : diaSemana - 1; // Si es domingo, retroceder 6 días
-    
-    const lunesActual = new Date(horaArgentina);
-    lunesActual.setDate(horaArgentina.getDate() - diasHastaLunes);
-    lunesActual.setHours(0, 0, 0, 0);
-    
-    // El domingo de la semana actual
-    const domingoActual = new Date(lunesActual);
-    domingoActual.setDate(lunesActual.getDate() + 6);
-    domingoActual.setHours(23, 59, 59, 999);
-    
-    // Convertir a formato de fecha local para la consulta
-    const fechaInicio = obtenerFechaLocal(lunesActual);
-    const fechaFin = obtenerFechaLocal(domingoActual);
-    
-    // Obtener TODAS las canchas primero
-    const { data: todasCanchas, error: errorCanchas } = await supabase
-      .from('cancha')
-      .select('id_cancha, nombre')
-      .order('nombre');
-    
-    if (errorCanchas) {
-      throw new Error(`Error al obtener canchas: ${errorCanchas.message}`);
-    }
-    
-    // Obtener reservas de la semana actual (lunes a domingo)
-    const { data: reservasSemanaActual, error: errorReservas } = await supabase
-      .from('reserva')
-      .select('id_cancha, fecha_reserva')
-      .gte('fecha_reserva', fechaInicio)
-      .lte('fecha_reserva', fechaFin)
-      .neq('estado_reserva', 'cancelada');
-    
-    if (errorReservas) {
-      throw new Error(`Error al obtener reservas: ${errorReservas.message}`);
-    }
-    
-    // Contar reservas por cancha
-    const conteoReservas: { [key: number]: number } = {};
-    
-    reservasSemanaActual?.forEach((reserva) => {
-      const id = reserva.id_cancha;
-      conteoReservas[id] = (conteoReservas[id] || 0) + 1;
-    });
-    
-    // Crear resultado con TODAS las canchas, incluso las que tienen 0 reservas
-    const resultado = todasCanchas?.map(cancha => ({
-      nombre: cancha.nombre,
-      cantidad: conteoReservas[cancha.id_cancha] || 0
-    })) || [];
-    
-    // Ordenar por cantidad de reservas (mayor a menor) pero mantener todas
-    return resultado.sort((a, b) => b.cantidad - a.cantidad);
-    
-  } catch {
-        return [];
-  }
-}
-
-// Obtener ingresos por mes (últimos 6 meses)
-export async function obtenerIngresosMensuales() {
-  try {
-    const supabase = createServerComponentClient({ cookies });
-    const hoy = new Date();
-    const meses = [];
-    
-    // Generar últimos 6 meses
-    for (let i = 5; i >= 0; i--) {
-      const fecha = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
-      const inicioMes = new Date(fecha.getFullYear(), fecha.getMonth(), 1);
-      const finMes = new Date(fecha.getFullYear(), fecha.getMonth() + 1, 0);
-      
-      const inicioMesStr = obtenerFechaLocal(inicioMes);
-      const finMesStr = obtenerFechaLocal(finMes);
-      
-      const { data: reservas } = await supabase
-        .from('reserva')
-        .select('costo_reserva')
-        .gte('fecha_reserva', inicioMesStr)
-        .lte('fecha_reserva', finMesStr)
-        .neq('estado_reserva', 'cancelada');
-      
-      const ingresos = reservas?.reduce((total, reserva) => 
-        total + (reserva.costo_reserva || 0), 0) || 0;
-      
-      meses.push({
-        mes: fecha.toLocaleDateString('es-ES', { month: 'short', year: 'numeric' }),
-        ingresos
-      });
-    }
-    
-    return meses;
-  } catch {
-        return [];
-  }
-}
-
-// Obtener horarios disponibles por cancha para hoy - TODAS las canchas del predio
-export async function obtenerHorariosDisponibles() {
-  try {
-    const supabase = createServerComponentClient({ cookies });
-    
-    // Obtener fecha y hora actual en Buenos Aires (UTC-3)
-    // El servidor está en UTC, así que convertimos a Buenos Aires
-    const ahoraUTC = new Date();
-    const ahoraBuenosAires = new Date(ahoraUTC.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
-    const hoy = obtenerFechaLocal(ahoraBuenosAires);
-    const horaActual = ahoraBuenosAires.getHours();
-    
-
-    
-    // Obtener TODAS las canchas del predio (sin filtrar por estado)
-    const { data: canchas, error: errorCanchas } = await supabase
-      .from('cancha')
-      .select('*')
-      .order('id_cancha');
-    
-    if (errorCanchas) {
-      throw new Error(`Error al obtener canchas: ${errorCanchas.message}`);
-    }
-    
-    // Obtener reservas de hoy (solo activas: confirmadas y pendientes)
-    const { data: reservasHoy, error: errorReservas } = await supabase
-      .from('reserva')
-      .select('id_cancha, hora_inicio, hora_fin')
-      .eq('fecha_reserva', hoy)
-      .in('estado_reserva', ['confirmada', 'pendiente']);
-    
-    if (errorReservas) {
-      throw new Error(`Error al obtener reservas: ${errorReservas.message}`);
-    }
-    
-
-    const generarHorariosCompletos = (cancha: { id_cancha: number; nombre: string; estado?: string; estado_cancha?: string }, reservasCancha: { hora_inicio: string; hora_fin: string }[]) => {
-      const horariosDisponibles: string[] = [];
-      const horariosPasados: string[] = [];
-      
-      // Verificar si la cancha está disponible para reservas
-      const estadoReal = cancha.estado?.toLowerCase();
-      const estadoCompatibilidad = cancha.estado_cancha?.toLowerCase();
-      
-      const estadosNoDisponibles = [
-        'no disponible', 
-        'en mantenimiento', 
-        'mantenimiento',
-        'fuera de servicio',
-        'inactiva',
-        'inactivo',
-        'cerrada',
-        'cerrado'
-      ];
-      
-      const canchaEnMantenimiento = 
-        (estadoReal && estadosNoDisponibles.includes(estadoReal)) || 
-        (estadoCompatibilidad && estadosNoDisponibles.includes(estadoCompatibilidad));
-      
-      // Horario de funcionamiento completo (8:00 - 23:00, incluyendo 23:00)
-      const horaInicio = 8;
-      const horaFin = 24; // Cambiado para incluir 23:00
-      
-      // Crear mapa de horarios ocupados por reservas
-      const horariosReservados = new Set<string>();
-      const rangosOcupados: string[] = [];
-      
-      reservasCancha.forEach(reserva => {
-        const inicioHora = parseInt(reserva.hora_inicio.split(':')[0]);
-        const finHora = parseInt(reserva.hora_fin.split(':')[0]) || 24; // 00:00 = 24
-        
-
-        for (let h = inicioHora; h < finHora; h++) {
-          const horaStr = h.toString().padStart(2, '0') + ':00';
-          horariosReservados.add(horaStr);
-        }
-        
-        // Agregar el rango completo a la lista de ocupados
-        const rangoCompleto = `${reserva.hora_inicio.substring(0, 5)}-${reserva.hora_fin === '00:00' ? '00:00' : reserva.hora_fin.substring(0, 5)}`;
-        if (!rangosOcupados.includes(rangoCompleto)) {
-          rangosOcupados.push(rangoCompleto);
-        }
-      });
-      
-
-      for (let hora = horaInicio; hora < horaFin && hora <= 23; hora++) {
-        const horaStr = hora.toString().padStart(2, '0') + ':00';
-        
-        // Verificar si el horario ya pasó (solo para el día actual)
-        // Un horario se considera pasado si:
-        // 1. La hora es menor a la actual (ej: 16:00 cuando son las 19:xx)
-        // 2. Es la misma hora pero ya pasó (ej: 19:00 cuando son las 19:01)
-        const esHorarioPasado = hora <= horaActual;
-        
-
-        
-        // Verificar si está ocupado por reserva
-        const estaOcupado = horariosReservados.has(horaStr);
-        
-        if (canchaEnMantenimiento) {
-          // Si la cancha está en mantenimiento, no hay horarios disponibles
-          // Los horarios se mostrarán como "no disponible por mantenimiento"
-        } else if (esHorarioPasado) {
-          horariosPasados.push(horaStr);
-        } else if (estaOcupado) {
-          // Ya está en rangosOcupados
-        } else {
-          horariosDisponibles.push(horaStr);
-        }
-      }
-      
-
-      const horariosOcupadosIndividuales = Array.from(horariosReservados).sort();
-
-      return {
-        horariosOcupados: rangosOcupados, // Para mostrar rangos completos
-        horariosOcupadosIndividuales: horariosOcupadosIndividuales, // Para mostrar horarios individuales
-        horariosDisponibles: horariosDisponibles,
-        horariosPasados: horariosPasados,
-        canchaEnMantenimiento: !!canchaEnMantenimiento, // Forzar boolean
-        estadoCancha: canchaEnMantenimiento ? 'En mantenimiento' : 'Operativa'
-      };
-    };
-    
-    return canchas?.map(cancha => {
-      const reservasCancha = reservasHoy?.filter(r => r.id_cancha === cancha.id_cancha) || [];
-      const { horariosOcupados, horariosOcupadosIndividuales, horariosDisponibles, horariosPasados, canchaEnMantenimiento, estadoCancha } = generarHorariosCompletos(cancha, reservasCancha);
-      
-      return {
-        id_cancha: cancha.id_cancha,
-        nombre: cancha.nombre || `Cancha ${cancha.id_cancha}`,
-        tipo: cancha.tipo || 'N/A',
-        tarifa_hora: cancha.tarifa_hora || 0,
-        disponibilidad_horaria: cancha.disponibilidad_horaria || '08:00-23:00',
-        horariosOcupados,
-        horariosOcupadosIndividuales,
-        horariosDisponibles,
-        horariosPasados,
-        canchaEnMantenimiento,
-        estadoCancha,
-        totalHorariosHoy: 16 // 8:00 a 23:00 = 16 horarios
-      };
-    }) || [];
-    
-  } catch {
-        return [];
-  }
-}
-
-// Obtener reservas para el dashboard (con filtro de fecha opcional)
-export async function obtenerReservasRecientes(limite = 10, fechaFiltro?: string) {
-  try {
-    const supabase = createServerComponentClient({ cookies });
-    
-    let query = supabase
-      .from('reserva')
-      .select(`
-        *,
-        cliente:cliente(nombre, apellido),
-        cancha:cancha(nombre)
-      `);
-    
-    // Si se proporciona una fecha específica, filtrar por esa fecha
-    if (fechaFiltro) {
-      query = query.eq('fecha_reserva', fechaFiltro);
-    }
-    
-    const { data: reservas } = await query
-      .order('fecha_reserva', { ascending: false })
-      .order('hora_inicio', { ascending: false })
-      .limit(limite);
-    
-    return reservas?.map((reserva) => ({
-      id_reserva: reserva.id_reserva,
-      cliente_nombre: `${reserva.cliente?.nombre || ''} ${reserva.cliente?.apellido || ''}`.trim(),
-      cancha_nombre: reserva.cancha?.nombre || `Cancha ${reserva.id_cancha}`,
-      fecha_reserva: reserva.fecha_reserva,
-      hora_inicio: reserva.hora_inicio,
-      hora_fin: reserva.hora_fin,
-      estado_reserva: reserva.estado_reserva,
-      costo_reserva: reserva.costo_reserva
-    })) || [];
-  } catch {
-        return [];
-  }
-}
-
-// Obtener reservas del día actual para el dashboard
-export async function obtenerReservasDelDia(limite = 20) {
-  try {
-    // Obtener fecha actual (asumiendo servidor en horario argentino)
-    const hoy = obtenerFechaLocal(new Date());
-    return await obtenerReservasRecientes(limite, hoy);
-  } catch {
-        return [];
-  }
-}
-
-
 
 // Función para obtener reservas pendientes que exceden el tiempo límite
 export async function obtenerReservasPendientesVencidas(tiempoLimiteMinutos = 5) {
@@ -1377,15 +370,7 @@ export async function obtenerTiempoRestanteReserva(idReserva: number) {
   }
 }
 
-// ============================================================================
-// PASO 3: lógica de reservas migrada al modelo `recurso`.
-// Estas funciones son NUEVAS y conviven con las de `cancha` de arriba (que
-// siguen usándose desde app/(protected)/canchas, CanchaForm/CanchasList y el
-// dashboard). No se modificó ni se eliminó ninguna función legacy.
-// ============================================================================
-
-// Recursos activos y disponibles para reservar (equivalente a obtenerCanchasDisponibles
-// pero sobre la tabla `recurso`).
+// Recursos activos y disponibles para reservar.
 export async function obtenerRecursosDisponibles(): Promise<Recurso[]> {
   try {
     const supabase = createServerComponentClient({ cookies });
@@ -1411,7 +396,6 @@ export async function obtenerRecursosDisponibles(): Promise<Recurso[]> {
 }
 
 // Reservas que hoy bloquean el recurso (confirmadas, o pendientes con pago aún vigente).
-// Reemplaza a obtenerReservasPorFechaYCancha para el flujo basado en recurso.
 export async function obtenerReservasPorFechaYRecurso(fecha: string, idRecurso: number) {
   try {
     const supabase = createServerComponentClient({ cookies });
@@ -1687,10 +671,7 @@ export async function actualizarReservaRecurso(
 }
 
 // ============================================================================
-// DASHBOARD (modelo recurso): funciones nuevas para el Dashboard principal.
-// Reemplazan, solo en el Dashboard, a las legacy basadas en `cancha`
-// (obtenerEstadisticasDashboard, obtenerHorariosDisponibles, obtenerReservasPorHorario).
-// Esas funciones legacy NO se modifican ni se eliminan.
+// DASHBOARD (modelo recurso).
 // ============================================================================
 
 // Elimina una reserva del nuevo modelo basado en `recurso`.
@@ -1758,7 +739,7 @@ function generarSlotsDeMediaHora(horaApertura: string, horaCierre: string): stri
   return slots;
 }
 
-// KPIs del dashboard usando `recurso` en lugar de `cancha` para disponibilidad.
+// KPIs del dashboard usando `recurso` para disponibilidad.
 export async function obtenerEstadisticasDashboardRecursos() {
   try {
     const supabase = createServerComponentClient({ cookies });
@@ -2045,7 +1026,7 @@ export async function obtenerDisponibilidadSemanalRecurso(idRecurso: number) {
 }
 
 // Reservas por horario en buckets de 30 min (en vez de forzar todo a :00),
-// agnóstico de cancha/recurso ya que solo agrupa por reserva.hora_inicio.
+// agnóstico del recurso ya que solo agrupa por reserva.hora_inicio.
 export async function obtenerReservasPorHorarioRecurso() {
   try {
     const supabase = createServerComponentClient({ cookies });
