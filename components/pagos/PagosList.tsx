@@ -156,6 +156,15 @@ export default function PagosList({
                       </span>
                     </div>
 
+                    {pago.reserva_cancelada && (
+                      <div
+                        role="alert"
+                        className="mt-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm font-medium text-red-800"
+                      >
+                        ⚠️ Pago aprobado asociado a una reserva cancelada. Requiere revisión administrativa
+                      </div>
+                    )}
+
                     <div className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-3">
                       <div>
                         <p className="text-xs text-gray-500">

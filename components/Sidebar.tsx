@@ -12,9 +12,11 @@ import {
     CreditCardIcon,
     NoSymbolIcon,
     ChartBarIcon,
-    ArrowRightOnRectangleIcon
+    ArrowRightOnRectangleIcon,
+    ShieldCheckIcon
 } from '@heroicons/react/24/outline';
 import { obtenerPermisosReportes } from '@/app/api/reportes/permissions';
+import { obtenerEsAdminMonitoreo } from '@/app/api/admin/monitoreo/actions';
 
 const navigation = [
     { name: 'Inicio', href: '/dashboard', icon: HomeIcon },
@@ -23,13 +25,16 @@ const navigation = [
     { name: 'Reservas', href: '/reservas', icon: CalendarDaysIcon },
     { name: 'Clientes', href: '/clientes', icon: UserGroupIcon },
     { name: 'Pagos', href: '/pagos', icon: CreditCardIcon },
-    { name: 'Reportes', href: '/reportes', icon: ChartBarIcon }
+    { name: 'Reportes', href: '/reportes', icon: ChartBarIcon },
+    { name: 'Monitoreo', href: '/admin', icon: ShieldCheckIcon }
 ];
 
 export default function Sidebar() {
     const pathname = usePathname();
 
     const [puedeVerReportes, setPuedeVerReportes] = useState(false);
+
+    const [puedeVerAdmin, setPuedeVerAdmin] = useState(false);
 
     useEffect(() => {
         let activo = true;
@@ -46,6 +51,18 @@ export default function Sidebar() {
                     setPuedeVerReportes(false);
                 }
             }
+
+            try {
+                const admin = await obtenerEsAdminMonitoreo();
+
+                if (activo) {
+                    setPuedeVerAdmin(admin);
+                }
+            } catch {
+                if (activo) {
+                    setPuedeVerAdmin(false);
+                }
+            }
         };
 
         cargarPermisos();
@@ -58,6 +75,10 @@ export default function Sidebar() {
     const navigationFiltrada = navigation.filter((item) => {
         if (item.href === '/reportes') {
             return puedeVerReportes;
+        }
+
+        if (item.href === '/admin') {
+            return puedeVerAdmin;
         }
 
         return true;

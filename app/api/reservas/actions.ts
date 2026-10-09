@@ -15,6 +15,8 @@ import {
   horaAMinutos
 } from '@/lib/recursoDisponibilidad';
 import { tienePermisoUsuario } from '@/lib/auth/tienePermisoUsuario';
+import { obtenerPerfil } from '@/lib/auth/obtenerPerfil';
+import { logSystemEvent } from '@/lib/logger';
 
 function obtenerFechaLocal(fecha: Date): string {
   return fecha.getFullYear() + '-' + 
@@ -111,6 +113,7 @@ export async function obtenerReservas() {
 
 // Cambiar el estado de una reserva
 export async function cambiarEstadoReserva(id: number, estado: string) {
+  const requestId = `WEB-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const estadosValidos = [
     'pendiente',
     'confirmada',
@@ -122,11 +125,31 @@ export async function cambiarEstadoReserva(id: number, estado: string) {
     throw new Error('Estado de reserva no válido');
   }
 
+  const perfil = await obtenerPerfil();
+  const userId = perfil?.id ?? null;
+  let estadoAnterior: string | null = null;
+
+  const metadataBase = () => ({
+    id_reserva: id,
+    origen: 'web',
+    estado_anterior: estadoAnterior,
+    estado_nuevo: estado,
+  });
+
   // Cancelar una reserva requiere permiso específico
   if (estado === 'cancelada') {
     const permitido = await tienePermisoUsuario('reservas.cancelar');
 
     if (!permitido) {
+      await logSystemEvent({
+        level: 'warning',
+        source: 'reservas',
+        event: 'RESERVA_STATUS_UNAUTHORIZED',
+        message: 'Intento de cancelar una reserva sin permisos',
+        requestId,
+        userId,
+        metadata: metadataBase(),
+      });
       throw new Error('No tenés permisos para cancelar reservas.');
     }
   }
@@ -136,28 +159,103 @@ export async function cambiarEstadoReserva(id: number, estado: string) {
     const permitido = await tienePermisoUsuario('pagos.confirmar');
 
     if (!permitido) {
+      await logSystemEvent({
+        level: 'warning',
+        source: 'reservas',
+        event: 'RESERVA_STATUS_UNAUTHORIZED',
+        message: 'Intento de confirmar una reserva sin permisos',
+        requestId,
+        userId,
+        metadata: metadataBase(),
+      });
       throw new Error(
         'No tenés permisos para confirmar el pago de reservas.'
       );
     }
   }
 
+  try {
   const supabase = createServerComponentClient({ cookies });
 
-  const { error } = await supabase
+  const { data: reservaAntes, error: consultaError } = await supabase
+  .from('reserva')
+  .select(`
+    id_reserva,
+    id_cliente,
+    id_recurso,
+    fecha_reserva,
+    hora_inicio,
+    hora_fin,
+    duracion_minutos,
+    costo_reserva,
+    estado_reserva
+  `)
+  .eq('id_reserva', id)
+  .maybeSingle();
+
+if (consultaError) {
+  throw new Error(
+    `Error al consultar la reserva: ${consultaError.message}`
+  );
+}
+
+if (!reservaAntes) {
+  throw new Error('La reserva no existe.');
+}
+
+  estadoAnterior = reservaAntes.estado_reserva;
+
+  const { data: filasActualizadas, error } = await supabase
     .from('reserva')
     .update({ estado_reserva: estado })
-    .eq('id_reserva', id);
+    .eq('id_reserva', id)
+    .select('id_reserva');
 
-  if (error) {
+  if (error || !filasActualizadas || filasActualizadas.length === 0) {
     throw new Error(
       'Error al cambiar el estado de la reserva - Permisos insuficientes'
     );
   }
 
+  await logSystemEvent({
+    level: 'info',
+    source: 'reservas',
+    event: estado === 'cancelada' ? 'RESERVA_CANCELLED' : 'RESERVA_STATUS_CHANGED',
+    message:
+      estado === 'cancelada'
+        ? 'Reserva cancelada desde el sistema'
+        : `Estado de reserva actualizado a ${estado}`,
+    requestId,
+    userId,
+    metadata: {
+      ...metadataBase(),
+      id_cliente: reservaAntes.id_cliente,
+      id_recurso: reservaAntes.id_recurso,
+      fecha_reserva: reservaAntes.fecha_reserva,
+      hora_inicio: reservaAntes.hora_inicio,
+      motivo: 'accion_manual',
+    },
+  });
+
   revalidatePath('/reservas');
 
   return true;
+  } catch (error) {
+    await logSystemEvent({
+      level: 'error',
+      source: 'reservas',
+      event: 'RESERVA_STATUS_ERROR',
+      message:
+        error instanceof Error
+          ? error.message
+          : 'Error desconocido al cambiar el estado de la reserva',
+      requestId,
+      userId,
+      metadata: metadataBase(),
+    });
+
+    throw error;
+  }
 }
 
 // Obtener clientes activos para el formulario
@@ -261,7 +359,14 @@ export async function obtenerReservasPendientesVencidas(tiempoLimiteMinutos = 5)
       .lt('created_at', tiempoLimite.toISOString());
     
     if (error) {
-            return [];
+      await logSystemEvent({
+        level: 'error',
+        source: 'reservas',
+        event: 'RESERVA_AUTO_CANCEL_ERROR',
+        message: `Error al consultar reservas pendientes vencidas: ${error.message}`,
+        metadata: { origen: 'autocancelacion', etapa: 'consulta' },
+      });
+      return [];
     }
     
     return data || [];
@@ -270,8 +375,62 @@ export async function obtenerReservasPendientesVencidas(tiempoLimiteMinutos = 5)
   }
 }
 
+// Registra un log por cada reserva efectivamente cancelada y arma la respuesta.
+async function finalizarAutocancelacion(
+  reservasCanceladas: Array<{
+    id_reserva: number;
+    id_cliente?: number | null;
+    id_recurso?: number | null;
+    fecha_reserva?: string | null;
+    hora_inicio?: string | null;
+    created_at?: string | null;
+  }>,
+  requestId: string
+) {
+  for (const reserva of reservasCanceladas) {
+    await logSystemEvent({
+      level: 'info',
+      source: 'reservas',
+      event: 'RESERVA_AUTO_CANCELLED',
+      message: 'Reserva cancelada automáticamente por falta de pago en 5 minutos',
+      requestId,
+      metadata: {
+        id_reserva: reserva.id_reserva,
+        id_cliente: reserva.id_cliente,
+        id_recurso: reserva.id_recurso,
+        fecha_reserva: reserva.fecha_reserva,
+        hora_inicio: reserva.hora_inicio,
+        origen: 'autocancelacion',
+        estado_anterior: 'pendiente',
+        estado_nuevo: 'cancelada',
+        motivo: 'pago_no_confirmado_5_min',
+        created_at: reserva.created_at,
+      },
+    });
+  }
+
+  if (reservasCanceladas.length === 0) {
+    return {
+      success: true,
+      canceladas: 0,
+      mensaje: 'No hay reservas pendientes vencidas sin pago aprobado'
+    };
+  }
+
+  revalidatePath('/reservas');
+  revalidatePath('/dashboard');
+
+  return {
+    success: true,
+    canceladas: reservasCanceladas.length,
+    mensaje: `Se cancelaron ${reservasCanceladas.length} reservas pendientes que excedieron el tiempo límite de 5 minutos`,
+    reservas: reservasCanceladas
+  };
+}
+
 // Función para cancelar automáticamente reservas pendientes vencidas
 export async function cancelarReservasPendientesVencidas() {
+  const requestId = `AUTO-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   // Usar Service Role Key para procesos automáticos (no cookies de usuario)
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -285,7 +444,24 @@ export async function cancelarReservasPendientesVencidas() {
   try {
     // No necesitamos verificar conectividad de usuario para procesos automáticos
     
-    // Obtener reservas vencidas
+    // Camino atómico: una RPC bloquea, revalida pagos y cancela en la base de datos.
+    const { data: canceladasRpc, error: rpcError } = await supabase.rpc(
+      'cancelar_reservas_pendientes_vencidas'
+    );
+
+    if (!rpcError) {
+      return await finalizarAutocancelacion(canceladasRpc ?? [], requestId);
+    }
+
+    // PGRST202: PostgREST indica que la función no existe (migración sin aplicar).
+    // 42883 NO se acepta: también lo produce un error interno de la función
+    // (operador/función inexistente) y no debe degradar a la ruta no atómica.
+    // Eliminar este respaldo cuando la migración esté aplicada en todos los entornos.
+    if (rpcError.code !== 'PGRST202') {
+      throw new Error('Error al cancelar reservas vencidas');
+    }
+
+    // Respaldo (no atómico) hasta aplicar la migración.
     const reservasVencidas = await obtenerReservasPendientesVencidas();
     
     if (reservasVencidas.length === 0) {
@@ -298,33 +474,58 @@ export async function cancelarReservasPendientesVencidas() {
     
     // Extraer IDs de las reservas vencidas
     const idsVencidos = reservasVencidas.map(r => r.id_reserva);
-    
-    // Actualizar todas las reservas vencidas a estado "cancelada"
-    const { error } = await supabase
+
+    // Una reserva con pago aprobado nunca debe autocancelarse, aunque siga
+    // "pendiente" (p. ej. n8n registró el pago pero aún no confirmó la reserva).
+    const { data: pagosAprobados, error: pagosError } = await supabase
+      .from('pago')
+      .select('id_reserva')
+      .in('id_reserva', idsVencidos)
+      .eq('estado_pago', 'aprobado');
+
+    if (pagosError) {
+      throw new Error('Error al verificar los pagos de las reservas vencidas');
+    }
+
+    const idsPagados = new Set((pagosAprobados ?? []).map(p => p.id_reserva));
+    const idsACancelar = idsVencidos.filter(idReserva => !idsPagados.has(idReserva));
+
+    if (idsACancelar.length === 0) {
+      return {
+        success: true,
+        canceladas: 0,
+        mensaje: 'No hay reservas pendientes vencidas sin pago aprobado'
+      };
+    }
+
+    // Actualizar a "cancelada" solo las que siguen "pendiente": evita pisar una
+    // confirmación ocurrida entre la consulta anterior y esta actualización.
+    // .select() devuelve únicamente las filas realmente modificadas.
+    const { data: canceladas, error } = await supabase
       .from('reserva')
-      .update({ 
+      .update({
         estado_reserva: 'cancelada'
       })
-      .in('id_reserva', idsVencidos);
-    
-    if (error) {
-            throw new Error('Error al cancelar reservas vencidas');
-    }
-    
+      .in('id_reserva', idsACancelar)
+      .eq('estado_reserva', 'pendiente')
+      .select('id_reserva, id_cliente, id_recurso, fecha_reserva, hora_inicio, created_at');
 
-    
-    // Revalidar páginas relacionadas
-    revalidatePath('/reservas');
-    revalidatePath('/dashboard');
-    
-    return {
-      success: true,
-      canceladas: reservasVencidas.length,
-      mensaje: `Se cancelaron ${reservasVencidas.length} reservas pendientes que excedieron el tiempo límite de 5 minutos`,
-      reservas: reservasVencidas
-    };
-    
+    if (error) {
+      throw new Error('Error al cancelar reservas vencidas');
+    }
+
+    return await finalizarAutocancelacion(canceladas ?? [], requestId);
+
   } catch (error) {
+    await logSystemEvent({
+      level: 'error',
+      source: 'reservas',
+      event: 'RESERVA_AUTO_CANCEL_ERROR',
+      message: error instanceof Error ? error.message : 'Error desconocido en la autocancelación',
+      requestId,
+      metadata: { origen: 'autocancelacion', motivo: 'pago_no_confirmado_5_min' },
+    });
+
         return {
       success: false,
       canceladas: 0,
@@ -579,50 +780,130 @@ async function verificarDisponibilidadRecurso(
 // La verificación de solapamiento/bloqueos y el insert ahora son atómicos dentro
 // del RPC `crear_reserva_recurso` (advisory lock transaccional en Postgres).
 export async function crearReservaRecurso(datos: NuevaReservaRecursoInput) {
-  const permitido = await tienePermisoUsuario('reservas.crear');
+  const requestId = `RES-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 
-  if (!permitido) {
-    throw new Error('No tenés permisos para crear reservas.');
+  try {
+    const permitido = await tienePermisoUsuario('reservas.crear');
+
+    if (!permitido) {
+      await logSystemEvent({
+        level: 'warning',
+        source: 'reservas',
+        event: 'RESERVA_CREATE_UNAUTHORIZED',
+        message: 'Intento de creación de reserva sin permisos',
+        requestId,
+        metadata: {
+          id_cliente: datos.id_cliente,
+          id_recurso: datos.id_recurso,
+          fecha_reserva: datos.fecha_reserva,
+          hora_inicio: datos.hora_inicio,
+          duracion_minutos: datos.duracion_minutos,
+        },
+      });
+
+      throw new Error('No tenés permisos para crear reservas.');
+    }
+
+    const supabase = createServerComponentClient({ cookies });
+
+    if (!esDuracionValida(datos.duracion_minutos)) {
+      throw new Error(
+        `Duración no válida: ${datos.duracion_minutos} minutos. Valores permitidos: ${DURACIONES_VALIDAS_MINUTOS.join(' o ')} minutos.`
+      );
+    }
+
+    const horaFin = calcularHoraFinPorDuracion(
+      datos.hora_inicio,
+      datos.duracion_minutos
+    );
+
+    const tipoCliente = await obtenerTipoClienteParaTarifa(
+      datos.id_cliente
+    );
+
+    const costoReserva = await calcularCostoReservaPorRecurso(
+      datos.id_recurso,
+      tipoCliente,
+      datos.duracion_minutos
+    );
+
+    const { data, error } = await supabase.rpc('crear_reserva_recurso', {
+      p_id_cliente: datos.id_cliente,
+      p_id_recurso: datos.id_recurso,
+      p_fecha_reserva: datos.fecha_reserva,
+      p_hora_inicio: datos.hora_inicio,
+      p_hora_fin: horaFin,
+      p_duracion_minutos: datos.duracion_minutos,
+      p_costo_reserva: costoReserva
+    });
+
+    if (error) {
+      throw new Error(`Error al crear la reserva: ${error.message}`);
+    }
+
+    const resultado = data as {
+      success: boolean;
+      id_reserva?: number;
+      error_code?:
+        | 'DURACION_INVALIDA'
+        | 'HORARIO_INVALIDO'
+        | 'RECURSO_NO_DISPONIBLE'
+        | 'CONFLICTO_RESERVA'
+        | 'CONFLICTO_BLOQUEO';
+      message?: string;
+    } | null;
+
+    if (!resultado?.success) {
+      throw new Error(
+        resultado?.message ||
+        `No se pudo crear la reserva (${resultado?.error_code || 'ERROR_DESCONOCIDO'}).`
+      );
+    }
+
+    await logSystemEvent({
+      level: 'info',
+      source: 'reservas',
+      event: 'RESERVA_CREATED',
+      message: 'Reserva creada correctamente',
+      requestId,
+      metadata: {
+        id_reserva: resultado.id_reserva,
+        id_cliente: datos.id_cliente,
+        id_recurso: datos.id_recurso,
+        fecha_reserva: datos.fecha_reserva,
+        hora_inicio: datos.hora_inicio,
+        hora_fin: horaFin,
+        duracion_minutos: datos.duracion_minutos,
+        tipo_cliente: tipoCliente,
+        costo_reserva: costoReserva,
+      },
+    });
+
+    revalidatePath('/reservas');
+
+    return resultado.id_reserva as number;
+
+  } catch (error) {
+
+    await logSystemEvent({
+      level: 'error',
+      source: 'reservas',
+      event: 'RESERVA_CREATE_ERROR',
+      message: error instanceof Error
+        ? error.message
+        : 'Error desconocido al crear la reserva',
+      requestId,
+      metadata: {
+        id_cliente: datos.id_cliente,
+        id_recurso: datos.id_recurso,
+        fecha_reserva: datos.fecha_reserva,
+        hora_inicio: datos.hora_inicio,
+        duracion_minutos: datos.duracion_minutos,
+      },
+    });
+
+    throw error;
   }
-
-  const supabase = createServerComponentClient({ cookies });
-
-  if (!esDuracionValida(datos.duracion_minutos)) {
-    throw new Error(`Duración no válida: ${datos.duracion_minutos} minutos. Valores permitidos: ${DURACIONES_VALIDAS_MINUTOS.join(' o ')} minutos.`);
-  }
-
-  const horaFin = calcularHoraFinPorDuracion(datos.hora_inicio, datos.duracion_minutos);
-
-  const tipoCliente = await obtenerTipoClienteParaTarifa(datos.id_cliente);
-  const costoReserva = await calcularCostoReservaPorRecurso(datos.id_recurso, tipoCliente, datos.duracion_minutos);
-
-  const { data, error } = await supabase.rpc('crear_reserva_recurso', {
-    p_id_cliente: datos.id_cliente,
-    p_id_recurso: datos.id_recurso,
-    p_fecha_reserva: datos.fecha_reserva,
-    p_hora_inicio: datos.hora_inicio,
-    p_hora_fin: horaFin,
-    p_duracion_minutos: datos.duracion_minutos,
-    p_costo_reserva: costoReserva
-  });
-
-  if (error) {
-    throw new Error(`Error al crear la reserva: ${error.message}`);
-  }
-
-  const resultado = data as {
-    success: boolean;
-    id_reserva?: number;
-    error_code?: 'DURACION_INVALIDA' | 'HORARIO_INVALIDO' | 'RECURSO_NO_DISPONIBLE' | 'CONFLICTO_RESERVA' | 'CONFLICTO_BLOQUEO';
-    message?: string;
-  } | null;
-
-  if (!resultado?.success) {
-    throw new Error(resultado?.message || `No se pudo crear la reserva (${resultado?.error_code || 'ERROR_DESCONOCIDO'}).`);
-  }
-
-  revalidatePath('/reservas');
-  return resultado.id_reserva as number;
 }
 
 // Actualiza una reserva del nuevo modelo, recalculando hora_fin y costo.
@@ -630,12 +911,16 @@ export async function actualizarReservaRecurso(
   id: number,
   datos: NuevaReservaRecursoInput
 ) {
+  const requestId = `RES-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const permitido = await tienePermisoUsuario('reservas.editar');
 
   if (!permitido) {
     throw new Error('No tenés permisos para editar reservas.');
   }
 
+  const userId = (await obtenerPerfil())?.id ?? null;
+
+  try {
   const supabase = createServerComponentClient({ cookies });
 
   if (!esDuracionValida(datos.duracion_minutos)) {
@@ -666,8 +951,48 @@ export async function actualizarReservaRecurso(
     throw new Error(`Error al actualizar la reserva: ${error.message}`);
   }
 
+  await logSystemEvent({
+    level: 'info',
+    source: 'reservas',
+    event: 'RESERVA_UPDATED',
+    message: 'Reserva actualizada correctamente',
+    requestId,
+    userId,
+    metadata: {
+      id_reserva: id,
+      origen: 'web',
+      id_cliente: datos.id_cliente,
+      id_recurso: datos.id_recurso,
+      fecha_reserva: datos.fecha_reserva,
+      hora_inicio: datos.hora_inicio,
+      hora_fin: horaFin,
+      duracion_minutos: datos.duracion_minutos,
+      costo_reserva: costoReserva,
+    },
+  });
+
   revalidatePath('/reservas');
   return true;
+  } catch (error) {
+    await logSystemEvent({
+      level: 'error',
+      source: 'reservas',
+      event: 'RESERVA_UPDATE_ERROR',
+      message: error instanceof Error ? error.message : 'Error desconocido al actualizar la reserva',
+      requestId,
+      userId,
+      metadata: {
+        id_reserva: id,
+        origen: 'web',
+        id_recurso: datos.id_recurso,
+        fecha_reserva: datos.fecha_reserva,
+        hora_inicio: datos.hora_inicio,
+        duracion_minutos: datos.duracion_minutos,
+      },
+    });
+
+    throw error;
+  }
 }
 
 // ============================================================================
@@ -676,17 +1001,21 @@ export async function actualizarReservaRecurso(
 
 // Elimina una reserva del nuevo modelo basado en `recurso`.
 export async function eliminarReservaRecurso(id: number) {
+  const requestId = `RES-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const permitido = await tienePermisoUsuario('reservas.eliminar');
 
   if (!permitido) {
     throw new Error('No tenés permisos para eliminar reservas.');
   }
 
+  const userId = (await obtenerPerfil())?.id ?? null;
+
+  try {
   const supabase = createServerComponentClient({ cookies });
 
   const { data: reserva, error: errorConsulta } = await supabase
     .from('reserva')
-    .select('id_reserva, id_recurso')
+    .select('id_reserva, id_recurso, estado_reserva')
     .eq('id_reserva', id)
     .maybeSingle();
 
@@ -710,9 +1039,37 @@ export async function eliminarReservaRecurso(id: number) {
     throw new Error(`Error al eliminar la reserva: ${error.message}`);
   }
 
+  await logSystemEvent({
+    level: 'info',
+    source: 'reservas',
+    event: 'RESERVA_DELETED',
+    message: 'Reserva eliminada correctamente',
+    requestId,
+    userId,
+    metadata: {
+      id_reserva: id,
+      id_recurso: reserva.id_recurso,
+      origen: 'web',
+      estado_anterior: reserva.estado_reserva,
+    },
+  });
+
   revalidatePath('/reservas');
 
   return true;
+  } catch (error) {
+    await logSystemEvent({
+      level: 'error',
+      source: 'reservas',
+      event: 'RESERVA_DELETE_ERROR',
+      message: error instanceof Error ? error.message : 'Error desconocido al eliminar la reserva',
+      requestId,
+      userId,
+      metadata: { id_reserva: id, origen: 'web' },
+    });
+
+    throw error;
+  }
 }
 
 export async function obtenerPermisosReservas() {

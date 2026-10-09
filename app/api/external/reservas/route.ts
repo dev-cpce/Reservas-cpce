@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { ApiResponse } from '@/types/api';
+import { logSystemEvent } from '@/lib/logger';
+import { validarApiKeyN8n } from '@/lib/auth/apiKeyN8n';
 
 function getSupabaseClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -14,9 +16,7 @@ function getSupabaseClient() {
 }
 
 function validateApiKey(request: NextRequest) {
-  const apiKey = process.env.N8N_API_KEY;
-
-  return Boolean(apiKey) && request.headers.get('x-api-key') === apiKey;
+  return validarApiKeyN8n(request);
 }
 
 function jsonResponse<T>(status: number, payload: ApiResponse<T>) {
@@ -256,8 +256,16 @@ export async function GET(request: NextRequest) {
 // ============================================================
 
 export async function POST(request: NextRequest) {
+  const requestId = `EXT-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   try {
     if (!validateApiKey(request)) {
+       await logSystemEvent({
+        level: 'warning',
+        source: 'reservas-external',
+        event: 'RESERVA_EXTERNAL_UNAUTHORIZED',
+        message: 'Intento de creación de reserva con API Key inválida',
+        requestId,
+      });
       return jsonResponse(401, {
         success: false,
         error: 'API Key no válida',
@@ -442,12 +450,30 @@ export async function POST(request: NextRequest) {
     );
 
     if (rpcError) {
+      await logSystemEvent({
+        level: 'error',
+        source: 'reservas-external',
+        event: 'RESERVA_EXTERNAL_ERROR',
+        message: `Error al crear la reserva: ${rpcError.message}`,
+        requestId,
+        metadata: {
+          id_cliente: cliente.id_cliente,
+          chat_id: body.chat_id,
+          id_recurso: body.id_recurso,
+          fecha_reserva: body.fecha_reserva,
+          hora_inicio: body.hora_inicio,
+          hora_fin: horaFin,
+          duracion_minutos: body.duracion_minutos,
+          costo_reserva: costoReserva,
+        },
+      });
+
       return jsonResponse(500, {
         success: false,
         error: `Error al crear la reserva: ${rpcError.message}`,
       });
     }
-
+    
     if (!resultadoRpc?.success) {
       const errorCode = resultadoRpc?.error_code;
 
@@ -463,6 +489,27 @@ export async function POST(request: NextRequest) {
       if (errorCode === 'RECURSO_NO_DISPONIBLE') {
         status = 409;
       }
+      
+      await logSystemEvent({
+        level: 'warning',
+        source: 'reservas-external',
+        event: 'RESERVA_EXTERNAL_REJECTED',
+        message:
+          resultadoRpc?.message ||
+          'La reserva fue rechazada por la RPC',
+        requestId,
+        metadata: {
+          error_code: errorCode,
+          id_cliente: cliente.id_cliente,
+          chat_id: body.chat_id,
+          id_recurso: body.id_recurso,
+          fecha_reserva: body.fecha_reserva,
+          hora_inicio: body.hora_inicio,
+          hora_fin: horaFin,
+          duracion_minutos: body.duracion_minutos,
+          costo_reserva: costoReserva,
+        },
+      });
 
       return jsonResponse(status, {
         success: false,
@@ -474,6 +521,26 @@ export async function POST(request: NextRequest) {
     }
 
     const idReserva = resultadoRpc.id_reserva;
+
+    await logSystemEvent({
+    level: 'info',
+    source: 'reservas-external',
+    event: 'RESERVA_EXTERNAL_CREATED',
+    message: 'Reserva creada correctamente desde n8n',
+    requestId,
+    metadata: {
+      id_reserva: idReserva,
+      id_cliente: cliente.id_cliente,
+      chat_id: body.chat_id,
+      id_recurso: body.id_recurso,
+      fecha_reserva: body.fecha_reserva,
+      hora_inicio: body.hora_inicio,
+      hora_fin: horaFin,
+      duracion_minutos: body.duracion_minutos,
+      tipo_cliente: cliente.tipo_cliente,
+      costo_reserva: costoReserva,
+    },
+  });
 
     // --------------------------------------------------------
     // 6. Obtener la reserva creada
@@ -542,15 +609,27 @@ export async function POST(request: NextRequest) {
         `Reserva creada exitosamente para ${cliente.nombre} ${cliente.apellido}. ` +
         `Tiene 5 minutos para completar el pago.`,
     });
-  } catch (e) {
-    return jsonResponse(500, {
-      success: false,
-      error:
-        e instanceof Error
-          ? e.message
-          : 'Error interno del servidor',
-    });
-  }
+    } catch (e) {
+      await logSystemEvent({
+        level: 'error',
+        source: 'reservas-external',
+        event: 'RESERVA_EXTERNAL_ERROR',
+        message:
+          e instanceof Error
+            ? e.message
+            : 'Error interno del servidor',
+        requestId,
+      });
+
+      return jsonResponse(500, {
+        success: false,
+        error:
+          e instanceof Error
+            ? e.message
+            : 'Error interno del servidor',
+      });
+    }
+
 }
 
 // ============================================================
@@ -558,8 +637,39 @@ export async function POST(request: NextRequest) {
 // ============================================================
 
 export async function PUT(request: NextRequest) {
+  const requestId = `EXT-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+  let metaPut: Record<string, unknown> = { origen: 'n8n' };
+
+  // Registra y responde un rechazo (4xx -> warning) o un fallo (5xx -> error).
+  const fallar = async (
+    status: number,
+    error: string,
+    extra: Record<string, unknown> = {}
+  ) => {
+    await logSystemEvent({
+      level: status >= 500 ? 'error' : 'warning',
+      source: 'reservas-external',
+      event:
+        status >= 500
+          ? 'RESERVA_EXTERNAL_UPDATE_ERROR'
+          : 'RESERVA_EXTERNAL_UPDATE_REJECTED',
+      message: error,
+      requestId,
+      metadata: { ...metaPut, ...extra, http_status: status },
+    });
+
+    return jsonResponse(status, { success: false, error });
+  };
+
   try {
     if (!validateApiKey(request)) {
+      await logSystemEvent({
+        level: 'warning',
+        source: 'reservas-external',
+        event: 'RESERVA_EXTERNAL_UNAUTHORIZED',
+        message: 'Intento de actualización de reserva con API Key inválida',
+        requestId,
+      });
       return jsonResponse(401, {
         success: false,
         error: 'API Key no válida',
@@ -569,16 +679,21 @@ export async function PUT(request: NextRequest) {
     const body: ActualizarReservaExternalRequest =
       await request.json();
 
+    metaPut = {
+      origen: 'n8n',
+      id_reserva: body.id_reserva,
+      estado_nuevo: body.estado_reserva,
+    };
+
     // --------------------------------------------------------
     // 1. Validar datos
     // --------------------------------------------------------
 
     if (!body.chat_id || !body.id_reserva || !body.estado_reserva) {
-      return jsonResponse(400, {
-        success: false,
-        error:
-          'Campos requeridos: chat_id, id_reserva, estado_reserva',
-      });
+      return fallar(
+        400,
+        'Campos requeridos: chat_id, id_reserva, estado_reserva'
+      );
     }
 
     if (
@@ -586,11 +701,10 @@ export async function PUT(request: NextRequest) {
         body.estado_reserva
       )
     ) {
-      return jsonResponse(400, {
-        success: false,
-        error:
-          'estado_reserva debe ser: pendiente, confirmada o cancelada',
-      });
+      return fallar(
+        400,
+        'estado_reserva debe ser: pendiente, confirmada o cancelada'
+      );
     }
 
     const supabase = getSupabaseClient();
@@ -608,18 +722,14 @@ export async function PUT(request: NextRequest) {
       .maybeSingle();
 
     if (clienteError) {
-      return jsonResponse(500, {
-        success: false,
-        error: `Error al buscar el cliente: ${clienteError.message}`,
-      });
+      return fallar(500, `Error al buscar el cliente: ${clienteError.message}`);
     }
 
     if (!cliente) {
-      return jsonResponse(404, {
-        success: false,
-        error: 'Cliente no encontrado.',
-      });
+      return fallar(404, 'Cliente no encontrado.');
     }
+
+    metaPut = { ...metaPut, id_cliente: cliente.id_cliente };
 
     // --------------------------------------------------------
     // 3. Buscar reserva
@@ -646,18 +756,14 @@ export async function PUT(request: NextRequest) {
         .maybeSingle();
 
     if (buscarError) {
-      return jsonResponse(500, {
-        success: false,
-        error: `Error al buscar la reserva: ${buscarError.message}`,
-      });
+      return fallar(500, `Error al buscar la reserva: ${buscarError.message}`);
     }
 
     if (!reservaExistente) {
-      return jsonResponse(404, {
-        success: false,
-        error: 'Reserva no encontrada.',
-      });
+      return fallar(404, 'Reserva no encontrada.');
     }
+
+    metaPut = { ...metaPut, estado_anterior: reservaExistente.estado_reserva };
 
     // --------------------------------------------------------
     // 4. Verificar propiedad de la reserva
@@ -666,10 +772,7 @@ export async function PUT(request: NextRequest) {
     // --------------------------------------------------------
 
     if (reservaExistente.id_cliente !== cliente.id_cliente) {
-      return jsonResponse(403, {
-        success: false,
-        error: 'No tenés permisos para modificar esta reserva.',
-      });
+      return fallar(403, 'No tenés permisos para modificar esta reserva.');
     }
 
     // --------------------------------------------------------
@@ -680,32 +783,24 @@ export async function PUT(request: NextRequest) {
       body.estado_reserva === 'confirmada' &&
       reservaExistente.estado_reserva !== 'pendiente'
     ) {
-      return jsonResponse(409, {
-        success: false,
-        error:
-          'Solo se puede confirmar una reserva que está pendiente.',
-      });
+      return fallar(409, 'Solo se puede confirmar una reserva que está pendiente.');
     }
 
     if (
       body.estado_reserva === 'cancelada' &&
       reservaExistente.estado_reserva === 'cancelada'
     ) {
-      return jsonResponse(409, {
-        success: false,
-        error: 'La reserva ya está cancelada.',
-      });
+      return fallar(409, 'La reserva ya está cancelada.');
     }
 
     if (
       body.estado_reserva === 'pendiente' &&
       reservaExistente.estado_reserva !== 'pendiente'
     ) {
-      return jsonResponse(409, {
-        success: false,
-        error:
-          'No se puede volver una reserva existente al estado pendiente.',
-      });
+      return fallar(
+        409,
+        'No se puede volver una reserva existente al estado pendiente.'
+      );
     }
 
     // --------------------------------------------------------
@@ -739,6 +834,8 @@ export async function PUT(request: NextRequest) {
         .update(nuevosDatos)
         .eq('id_reserva', body.id_reserva)
         .eq('id_cliente', cliente.id_cliente)
+        // Evita pisar un cambio concurrente (p. ej. autocancelación) con datos leídos antes.
+        .eq('estado_reserva', reservaExistente.estado_reserva)
         .select(
           `
           id_reserva,
@@ -755,16 +852,42 @@ export async function PUT(request: NextRequest) {
           updated_at
           `
         )
-        .single();
+        .maybeSingle();
 
     if (actualizarError) {
-      return jsonResponse(500, {
-        success: false,
-        error:
-          `Error al actualizar el estado de la reserva: ` +
-          actualizarError.message,
-      });
+      return fallar(
+        500,
+        `Error al actualizar el estado de la reserva: ${actualizarError.message}`
+      );
     }
+
+    if (!reservaActualizada) {
+      return fallar(
+        409,
+        'La reserva cambió de estado mientras se procesaba la solicitud.',
+        { motivo: 'conflicto_concurrencia' }
+      );
+    }
+
+    await logSystemEvent({
+      level: 'info',
+      source: 'reservas-external',
+      event:
+        body.estado_reserva === 'cancelada'
+          ? 'RESERVA_EXTERNAL_CANCELLED'
+          : body.estado_reserva === 'confirmada'
+            ? 'RESERVA_EXTERNAL_CONFIRMED'
+            : 'RESERVA_EXTERNAL_UPDATED',
+      message: `Reserva actualizada a ${body.estado_reserva} desde n8n`,
+      requestId,
+      metadata: {
+        ...metaPut,
+        id_recurso: reservaActualizada.id_recurso,
+        fecha_reserva: reservaActualizada.fecha_reserva,
+        hora_inicio: reservaActualizada.hora_inicio,
+        motivo: 'solicitud_n8n',
+      },
+    });
 
     // --------------------------------------------------------
     // 7. Buscar recurso asociado a la reserva
@@ -787,12 +910,11 @@ export async function PUT(request: NextRequest) {
       .maybeSingle();
 
     if (recursoError) {
-      return jsonResponse(500, {
-        success: false,
-        error:
-          `Error al buscar el recurso de la reserva: ` +
-          recursoError.message,
-      });
+      return fallar(
+        500,
+        `Error al buscar el recurso de la reserva: ${recursoError.message}`,
+        { etapa: 'post_actualizacion' }
+      );
     }
 
     // --------------------------------------------------------
@@ -828,12 +950,9 @@ export async function PUT(request: NextRequest) {
         `Estado de reserva actualizado a: ${body.estado_reserva}`,
     });
   } catch (e) {
-    return jsonResponse(500, {
-      success: false,
-      error:
-        e instanceof Error
-          ? e.message
-          : 'Error interno del servidor',
-    });
+    return fallar(
+      500,
+      e instanceof Error ? e.message : 'Error interno del servidor'
+    );
   }
 }

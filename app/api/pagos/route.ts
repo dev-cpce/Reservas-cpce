@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
+import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { tienePermisoUsuario } from '@/lib/auth/tienePermisoUsuario';
+import { obtenerPerfil } from '@/lib/auth/obtenerPerfil';
+import { logSystemEvent } from '@/lib/logger';
 
 function getSupabaseClient() {
   const cookieStore = cookies();
@@ -47,7 +50,40 @@ export async function GET() {
       );
     }
 
-    return NextResponse.json(pagos);
+    // Solo se expone un booleano; el rol puede no leer la tabla reserva por RLS.
+    const idsAprobados = (pagos ?? [])
+      .filter((p) => p.estado_pago === 'aprobado')
+      .map((p) => p.id_reserva);
+    const reservasCanceladas = new Set<number>();
+
+    if (
+      idsAprobados.length > 0 &&
+      process.env.NEXT_PUBLIC_SUPABASE_URL &&
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    ) {
+      const admin = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL,
+        process.env.SUPABASE_SERVICE_ROLE_KEY
+      );
+      const { data: canceladas } = await admin
+        .from('reserva')
+        .select('id_reserva')
+        .in('id_reserva', idsAprobados)
+        .eq('estado_reserva', 'cancelada');
+
+      (canceladas ?? []).forEach((r) =>
+        reservasCanceladas.add(r.id_reserva)
+      );
+    }
+
+    return NextResponse.json(
+      (pagos ?? []).map((p) => ({
+        ...p,
+        reserva_cancelada:
+          p.estado_pago === 'aprobado' &&
+          reservasCanceladas.has(p.id_reserva),
+      }))
+    );
   } catch (error) {
     return NextResponse.json(
       {
@@ -63,12 +99,24 @@ export async function GET() {
 
 // POST - Crear nuevo pago
 export async function POST(request: NextRequest) {
+  const requestId = `PAG-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+  let meta: Record<string, unknown> = { origen: 'web' };
+  let userId: string | null = null;
+
   try {
     const permitido = await tienePermisoUsuario(
       'pagos.confirmar'
     );
 
     if (!permitido) {
+      await logSystemEvent({
+        level: 'warning',
+        source: 'pagos',
+        event: 'PAGO_UNAUTHORIZED',
+        message: 'Intento de registrar un pago sin permisos',
+        requestId,
+        metadata: meta,
+      });
       return NextResponse.json(
         {
           error:
@@ -78,6 +126,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    userId = (await obtenerPerfil())?.id ?? null;
     const body = await request.json();
 
     const {
@@ -87,6 +136,13 @@ export async function POST(request: NextRequest) {
       mp_id
     } = body;
 
+    meta = {
+      origen: 'web',
+      id_reserva,
+      monto,
+      estado_pago_nuevo: estado_pago,
+      mp_id: mp_id || null,
+    };
     // Validaciones
     if (!id_reserva || !monto || !estado_pago) {
       return NextResponse.json(
@@ -142,6 +198,15 @@ export async function POST(request: NextRequest) {
         .single();
 
     if (pagoError) {
+      await logSystemEvent({
+        level: 'error',
+        source: 'pagos',
+        event: 'PAGO_ERROR',
+        message: pagoError.message || 'Error al crear el pago',
+        requestId,
+        userId,
+        metadata: { ...meta, estado_reserva: reserva.estado_reserva },
+      });
       return NextResponse.json(
         {
           error:
@@ -152,10 +217,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    let estadoReservaNuevo: string = reserva.estado_reserva;
+
+    // Solo un pago aprobado confirma la reserva; uno pendiente no debe hacerlo.
     if (
+      estado_pago === 'aprobado' &&
       reserva.estado_reserva === 'pendiente'
     ) {
-      const { error: updateError } =
+      const { data: reservaConfirmada, error: updateError } =
         await supabase
           .from('reserva')
           .update({
@@ -164,22 +233,68 @@ export async function POST(request: NextRequest) {
           .eq(
             'id_reserva',
             id_reserva
-          );
+          )
+          // Evita pisar un cambio concurrente (p. ej. autocancelación).
+          .eq('estado_reserva', 'pendiente')
+          .select('id_reserva');
 
-      if (updateError) {
+      if (updateError || !reservaConfirmada || reservaConfirmada.length === 0) {
+        const mensajeError =
+          updateError?.message ||
+          'Pago creado, pero no se pudo actualizar la reserva';
+
+        // El pago ya existe pero la reserva quedó pendiente: estado inconsistente.
+        await logSystemEvent({
+          level: 'critical',
+          source: 'pagos',
+          event: 'PAGO_RESERVA_SYNC_ERROR',
+          message: mensajeError,
+          requestId,
+          userId,
+          metadata: {
+            ...meta,
+            id_pago: pago.id_pago,
+            estado_reserva: reserva.estado_reserva,
+            estado_reserva_esperado: 'confirmada',
+          },
+        });
         return NextResponse.json(
           {
-            error:
-              updateError.message ||
-              'Pago creado, pero no se pudo actualizar la reserva'
+            error: mensajeError
           },
           { status: 500 }
         );
       }
+
+      estadoReservaNuevo = 'confirmada';
     }
+
+    await logSystemEvent({
+      level: 'info',
+      source: 'pagos',
+      event: 'PAGO_CREATED',
+      message: 'Pago registrado correctamente',
+      requestId,
+      userId,
+      metadata: {
+        ...meta,
+        id_pago: pago.id_pago,
+        estado_reserva_anterior: reserva.estado_reserva,
+        estado_reserva_nuevo: estadoReservaNuevo,
+      },
+    });
 
     return NextResponse.json(pago);
   } catch (error) {
+    await logSystemEvent({
+      level: 'error',
+      source: 'pagos',
+      event: 'PAGO_ERROR',
+      message: error instanceof Error ? error.message : 'Error interno del servidor',
+      requestId,
+      userId,
+      metadata: meta,
+    });
     return NextResponse.json(
       {
         error:
@@ -194,6 +309,10 @@ export async function POST(request: NextRequest) {
 
 // PUT - Actualizar estado de pago
 export async function PUT(request: NextRequest) {
+  const requestId = `PAG-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+  let meta: Record<string, unknown> = { origen: 'web' };
+  let userId: string | null = null;
+
   try {
     const body = await request.json();
 
@@ -203,6 +322,7 @@ export async function PUT(request: NextRequest) {
       mp_id
     } = body;
 
+    meta = { origen: 'web', id_pago, estado_pago_nuevo: estado_pago };
     if (!id_pago || !estado_pago) {
       return NextResponse.json(
         {
@@ -237,6 +357,14 @@ export async function PUT(request: NextRequest) {
     }
 
     if (!permitido) {
+      await logSystemEvent({
+        level: 'warning',
+        source: 'pagos',
+        event: 'PAGO_UNAUTHORIZED',
+        message: 'Intento de modificar un pago sin permisos',
+        requestId,
+        metadata: meta,
+      });
       return NextResponse.json(
         {
           error: esCambioDeEstado
@@ -247,8 +375,17 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    userId = (await obtenerPerfil())?.id ?? null;
+
     const supabase = getSupabaseClient();
 
+    const { data: pagoAnterior } = await supabase
+      .from('pago')
+      .select('estado_pago')
+      .eq('id_pago', id_pago)
+      .maybeSingle();
+
+    meta = { ...meta, estado_pago_anterior: pagoAnterior?.estado_pago ?? null };
     const updateData: {
       estado_pago: string;
       mp_id?: string | null;
@@ -276,6 +413,15 @@ export async function PUT(request: NextRequest) {
         .single();
 
     if (error) {
+      await logSystemEvent({
+        level: 'error',
+        source: 'pagos',
+        event: 'PAGO_ERROR',
+        message: error.message || 'Error al actualizar el pago',
+        requestId,
+        userId,
+        metadata: meta,
+      });
       return NextResponse.json(
         {
           error:
@@ -286,8 +432,27 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    await logSystemEvent({
+      level: 'info',
+      source: 'pagos',
+      event: 'PAGO_STATUS_CHANGED',
+      message: `Pago actualizado a ${estado_pago}`,
+      requestId,
+      userId,
+      metadata: { ...meta, id_reserva: pago.id_reserva, monto: pago.monto },
+    });
+
     return NextResponse.json(pago);
   } catch (error) {
+    await logSystemEvent({
+      level: 'error',
+      source: 'pagos',
+      event: 'PAGO_ERROR',
+      message: error instanceof Error ? error.message : 'Error interno del servidor',
+      requestId,
+      userId,
+      metadata: meta,
+    });
     return NextResponse.json(
       {
         error:

@@ -23,6 +23,13 @@ export async function middleware(req: NextRequest) {
       return NextResponse.redirect(new URL('/dashboard', req.url))
     }
   } catch {
+    // Ante un error al validar la sesión no se deja pasar la solicitud a rutas privadas.
+    const pathnameError = req.nextUrl.pathname
+    const esPublica = pathnameError === '/login' || pathnameError.startsWith('/api/auth') || pathnameError.startsWith('/api/whatsapp') || pathnameError.includes('favicon.ico')
+
+    if (!esPublica) {
+      return NextResponse.redirect(new URL('/login', req.url))
+    }
   }
   return res
 }

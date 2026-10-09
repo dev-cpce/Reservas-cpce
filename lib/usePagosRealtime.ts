@@ -9,6 +9,8 @@ export interface Pago {
   estado_pago: 'aprobado' | 'pendiente' | 'cancelado' | 'desconocido';
   mp_id?: string | null;
   fecha_pago: string;
+  // Calculado por GET /api/pagos: pago aprobado sobre una reserva cancelada.
+  reserva_cancelada?: boolean;
 }
 
 interface UsePagosRealtimeResult {
@@ -37,11 +39,21 @@ export function usePagosRealtime(): UsePagosRealtimeResult {
    */
   const upsertPago = useCallback((pagoNuevo: Pago) => {
     setPagos(prev => {
+      const existente = prev.find(
+        pago => pago.id_pago === pagoNuevo.id_pago
+      );
       const sinDuplicado = prev.filter(
         pago => pago.id_pago !== pagoNuevo.id_pago
       );
 
-      return [pagoNuevo, ...sinDuplicado];
+      // Realtime no trae reserva_cancelada: se conserva el valor ya calculado
+      // mientras el pago siga aprobado.
+      const reserva_cancelada =
+        pagoNuevo.estado_pago === 'aprobado'
+          ? pagoNuevo.reserva_cancelada ?? existente?.reserva_cancelada
+          : false;
+
+      return [{ ...pagoNuevo, reserva_cancelada }, ...sinDuplicado];
     });
   }, []);
 
@@ -285,6 +297,10 @@ export function usePagosRealtime(): UsePagosRealtimeResult {
              * instancia del pago.
              */
             upsertPago(nuevoPago);
+
+            if (nuevoPago.estado_pago === 'aprobado') {
+              loadPagos();
+            }
           }
 
           if (payload.eventType === 'UPDATE') {
@@ -318,6 +334,11 @@ export function usePagosRealtime(): UsePagosRealtimeResult {
             }
 
             upsertPago(pagoActualizado);
+
+            // Recalcula la alerta de reserva cancelada en el servidor.
+            if (pagoActualizado.estado_pago === 'aprobado') {
+              loadPagos();
+            }
           }
 
           if (payload.eventType === 'DELETE') {

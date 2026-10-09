@@ -239,6 +239,7 @@ return {
 };
 
 const stats = getEstadisticas();
+const incidenciasPendientes = pagos.filter((p) => p.reserva_cancelada).length;
 
 if (error) {
 return ( <div className="max-w-7xl mx-auto"> <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg"> <h3 className="font-medium">
@@ -253,6 +254,11 @@ Error al cargar pagos </h3>
 }
 
 return ( <div className="max-w-7xl mx-auto">
+{incidenciasPendientes > 0 && (
+  <div role="alert" className="mb-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm font-medium text-red-800">
+    ⚠️ {incidenciasPendientes} {incidenciasPendientes === 1 ? 'pago aprobado asociado a una reserva cancelada requiere' : 'pagos aprobados asociados a reservas canceladas requieren'} revisión administrativa
+  </div>
+)}
 {/* Header */} <div className="flex justify-between items-center mb-8"> <div className="flex space-x-3">
 {permisos.puedeConfirmar && ( <button
            onClick={handleAgregarPago}
