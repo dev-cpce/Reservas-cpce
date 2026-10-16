@@ -1,0 +1,197 @@
+DECLARE
+    v_recurso_existe BOOLEAN;
+    v_conflicto_reserva RECORD;
+    v_conflicto_bloqueo RECORD;
+    v_id_reserva INT;
+    v_fecha_expiracion TIMESTAMPTZ;
+BEGIN
+
+    -- ============================================================
+    -- 1. LOCK TRANSACCIONAL
+    -- Serializa reservas del mismo recurso y fecha.
+    -- ============================================================
+    PERFORM pg_advisory_xact_lock(
+        hashtext(
+            'reserva_recurso_' ||
+            p_id_recurso::TEXT ||
+            '_' ||
+            p_fecha_reserva::TEXT
+        )
+    );
+
+    -- ============================================================
+    -- 2. VALIDAR DURACIÓN
+    -- ============================================================
+    IF p_duracion_minutos NOT IN (90, 120) THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error_code', 'DURACION_INVALIDA',
+            'message', 'La duración debe ser de 90 o 120 minutos.'
+        );
+    END IF;
+
+    -- ============================================================
+    -- 3. VALIDAR HORARIO
+    -- ============================================================
+    IF p_hora_fin <= p_hora_inicio THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error_code', 'HORARIO_INVALIDO',
+            'message', 'La hora de fin debe ser posterior a la hora de inicio.'
+        );
+    END IF;
+
+    -- ============================================================
+    -- 4. VALIDAR RECURSO
+    -- ============================================================
+    SELECT EXISTS (
+        SELECT 1
+        FROM public.recurso
+        WHERE id_recurso = p_id_recurso
+          AND activo = TRUE
+          AND estado = 'DISPONIBLE'
+    )
+    INTO v_recurso_existe;
+
+    IF NOT v_recurso_existe THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error_code', 'RECURSO_NO_DISPONIBLE',
+            'message', 'El recurso no existe, está inactivo o no está disponible.'
+        );
+    END IF;
+
+    -- ============================================================
+    -- 5. BUSCAR CONFLICTO CON RESERVAS
+    --
+    -- CONFIRMADA → siempre bloquea
+    -- PENDIENTE + expiración futura → bloquea
+    -- PENDIENTE + expiración NULL → bloquea (legacy)
+    -- PENDIENTE vencida → no bloquea
+    -- CANCELADA → no bloquea
+    -- ============================================================
+    SELECT
+        id_reserva,
+        hora_inicio,
+        hora_fin,
+        estado_reserva
+    INTO v_conflicto_reserva
+    FROM public.reserva
+    WHERE id_recurso = p_id_recurso
+      AND fecha_reserva = p_fecha_reserva
+      AND estado_reserva != 'cancelada'
+      AND (
+          estado_reserva = 'confirmada'
+          OR (
+              estado_reserva = 'pendiente'
+              AND (
+                  fecha_expiracion_pago IS NULL
+                  OR fecha_expiracion_pago > NOW()
+              )
+          )
+      )
+      AND (
+          p_hora_inicio < hora_fin
+          AND p_hora_fin > hora_inicio
+      )
+    ORDER BY hora_inicio ASC
+    LIMIT 1;
+
+    IF v_conflicto_reserva.id_reserva IS NOT NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error_code', 'CONFLICTO_RESERVA',
+            'message', 'El recurso ya tiene una reserva en ese horario.',
+            'detalle', jsonb_build_object(
+                'id_reserva_conflicto',
+                    v_conflicto_reserva.id_reserva,
+                'hora_inicio',
+                    to_char(v_conflicto_reserva.hora_inicio, 'HH24:MI'),
+                'hora_fin',
+                    to_char(v_conflicto_reserva.hora_fin, 'HH24:MI'),
+                'estado',
+                    v_conflicto_reserva.estado_reserva
+            )
+        );
+    END IF;
+
+    -- ============================================================
+    -- 6. BUSCAR CONFLICTO CON BLOQUEOS
+    -- ============================================================
+    SELECT
+        id_bloqueo,
+        hora_inicio,
+        hora_fin,
+        motivo
+    INTO v_conflicto_bloqueo
+    FROM public.recurso_bloqueo
+    WHERE id_recurso = p_id_recurso
+      AND fecha = p_fecha_reserva
+      AND activo = TRUE
+      AND (
+          p_hora_inicio < hora_fin
+          AND p_hora_fin > hora_inicio
+      )
+    ORDER BY hora_inicio ASC
+    LIMIT 1;
+
+    IF v_conflicto_bloqueo.id_bloqueo IS NOT NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error_code', 'CONFLICTO_BLOQUEO',
+            'message', 'El recurso tiene un bloqueo activo en ese horario.',
+            'detalle', jsonb_build_object(
+                'id_bloqueo_conflicto',
+                    v_conflicto_bloqueo.id_bloqueo,
+                'hora_inicio',
+                    to_char(v_conflicto_bloqueo.hora_inicio, 'HH24:MI'),
+                'hora_fin',
+                    to_char(v_conflicto_bloqueo.hora_fin, 'HH24:MI'),
+                'motivo',
+                    v_conflicto_bloqueo.motivo
+            )
+        );
+    END IF;
+
+    -- ============================================================
+    -- 7. CREAR RESERVA PENDIENTE
+    -- La expiración se calcula directamente en PostgreSQL.
+    -- ============================================================
+    v_fecha_expiracion :=
+        NOW() + INTERVAL '5 minutes';
+
+    INSERT INTO public.reserva (
+        id_cliente,
+        id_recurso,
+        fecha_reserva,
+        hora_inicio,
+        hora_fin,
+        duracion_minutos,
+        estado_reserva,
+        costo_reserva,
+        fecha_expiracion_pago
+    )
+    VALUES (
+        p_id_cliente,
+        p_id_recurso,
+        p_fecha_reserva,
+        p_hora_inicio,
+        p_hora_fin,
+        p_duracion_minutos,
+        'pendiente',
+        p_costo_reserva,
+        v_fecha_expiracion
+    )
+    RETURNING id_reserva
+    INTO v_id_reserva;
+
+    -- ============================================================
+    -- 8. RESPUESTA EXITOSA
+    -- ============================================================
+    RETURN jsonb_build_object(
+        'success', true,
+        'id_reserva', v_id_reserva,
+        'fecha_expiracion_pago', v_fecha_expiracion
+    );
+
+END;

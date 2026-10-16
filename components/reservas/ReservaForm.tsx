@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Reserva, Cliente, Recurso, NuevaReservaRecursoInput } from '@/types';
 import { CalendarIcon, ClockIcon, MagnifyingGlassIcon, PlusIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { obtenerReservasPorFechaYRecurso, obtenerHorarioRecurso, obtenerBloqueosActivosRecurso } from '@/app/api/reservas/actions';
@@ -8,7 +8,7 @@ import {
   crearCliente,
   buscarClientes
 } from '@/app/api/clientes/actions';
-import { DURACIONES_VALIDAS_MINUTOS, esDuracionValida, calcularHoraFinPorDuracion, haySolapamientoDeHorarios, horaAMinutos } from '@/lib/recursoDisponibilidad';
+import { DURACIONES_VALIDAS_MINUTOS, esDuracionValida, calcularHoraFinPorDuracion, haySolapamientoDeHorarios, horaAMinutos, puntoRelativoA } from '@/lib/recursoDisponibilidad';
 
 interface ReservaFormProps {
   reserva?: Reserva;
@@ -130,14 +130,17 @@ useEffect(() => {
   const horaFin = horaInicio ? calcularHoraFinPorDuracion(horaInicio, duracionMinutos) : '';
   
   // Genera slots de 30 min entre apertura y cierre que alcancen a completar la duración elegida.
+  // El cierre se ancla a la apertura (no a la medianoche) para soportar horarios que cruzan el
+  // día, como "00:00" o "01:00" del día siguiente.
   const generarHorarios = (horaApertura: string, horaCierre: string, duracion: number) => {
     const horarios: string[] = [];
     const aperturaMin = horaAMinutos(horaApertura);
-    const cierreMin = horaAMinutos(horaCierre);
+    const cierreMin = puntoRelativoA(horaApertura, horaCierre);
 
     for (let minuto = aperturaMin; minuto + duracion <= cierreMin; minuto += 30) {
-      const hh = Math.floor(minuto / 60).toString().padStart(2, '0');
-      const mm = (minuto % 60).toString().padStart(2, '0');
+      const minutoDelDia = minuto % (24 * 60);
+      const hh = Math.floor(minutoDelDia / 60).toString().padStart(2, '0');
+      const mm = (minutoDelDia % 60).toString().padStart(2, '0');
       horarios.push(`${hh}:${mm}`);
     }
 
@@ -195,6 +198,34 @@ useEffect(() => {
     
     cargarReservasExistentes();
   }, [fecha, recursoId]);
+
+  // Si cambia el recurso o la fecha, la hora elegida pertenece a otro horario (apertura/
+  // cierre distintos) y queda obsoleta: se limpia para forzar una nueva selección válida.
+  // Se omite en el primer render para no perder la hora precargada al editar una reserva.
+  const esPrimerRenderRef = useRef(true);
+  useEffect(() => {
+    if (esPrimerRenderRef.current) {
+      esPrimerRenderRef.current = false;
+      return;
+    }
+    setHoraInicio('');
+  }, [recursoId, fecha]);
+
+  // Si cambia la duración y la hora ya elegida deja de entrar en el horario disponible
+  // (p. ej. ya no alcanza a terminar antes del cierre), se limpia para evitar enviar un
+  // horario inválido u ocupado que quedó seleccionado con la duración anterior.
+  useEffect(() => {
+    if (!horaInicio || !horarioRecurso) return;
+
+    const aperturaMin = horaAMinutos(horarioRecurso.hora_apertura);
+    const cierreMin = puntoRelativoA(horarioRecurso.hora_apertura, horarioRecurso.hora_cierre);
+    const inicioRelativo = puntoRelativoA(horarioRecurso.hora_apertura, horaInicio);
+
+    if (inicioRelativo < aperturaMin || inicioRelativo + duracionMinutos > cierreMin) {
+      setHoraInicio('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [duracionMinutos]);
   
   const validarFormulario = (): boolean => {
     if (!clienteId) {
@@ -237,6 +268,33 @@ useEffect(() => {
     
     if (!esDuracionValida(duracionMinutos)) {
       setError(`Duración no válida. Valores permitidos: ${DURACIONES_VALIDAS_MINUTOS.join(' o ')} minutos.`);
+      return false;
+    }
+
+    // Validación defensiva en el cliente: aunque el servidor/RPC son la fuente de verdad,
+    // evita enviar un horario que quedó obsoleto tras un cambio de fecha/recurso/duración.
+    if (!horarioRecurso) {
+      setError('No hay horario configurado para el recurso y día seleccionados');
+      return false;
+    }
+
+    const aperturaMin = horaAMinutos(horarioRecurso.hora_apertura);
+    const cierreMin = puntoRelativoA(horarioRecurso.hora_apertura, horarioRecurso.hora_cierre);
+    const inicioRelativo = puntoRelativoA(horarioRecurso.hora_apertura, horaInicio);
+
+    if (inicioRelativo < aperturaMin || inicioRelativo + duracionMinutos > cierreMin) {
+      setError('El horario seleccionado está fuera del horario de atención del recurso');
+      return false;
+    }
+
+    const horaFinCandidata = calcularHoraFinPorDuracion(horaInicio, duracionMinutos);
+    const estaOcupado = horariosOcupados.some(horario => {
+      const [inicioOcupado, finOcupado] = horario.split('-');
+      return haySolapamientoDeHorarios(horaInicio, horaFinCandidata, inicioOcupado, finOcupado);
+    });
+
+    if (estaOcupado) {
+      setError('El horario seleccionado se solapa con una reserva o bloqueo existente');
       return false;
     }
     

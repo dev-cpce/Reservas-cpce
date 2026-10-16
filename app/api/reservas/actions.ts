@@ -11,8 +11,10 @@ import {
   esDuracionValida,
   calcularHoraFinPorDuracion,
   haySolapamientoDeHorarios,
+  haySolapamientoEntreFechas,
   reservaBloqueaRecurso,
-  horaAMinutos
+  horaAMinutos,
+  puntoRelativoA
 } from '@/lib/recursoDisponibilidad';
 import { tienePermisoUsuario } from '@/lib/auth/tienePermisoUsuario';
 import { obtenerPerfil } from '@/lib/auth/obtenerPerfil';
@@ -721,8 +723,19 @@ async function obtenerTipoClienteParaTarifa(idCliente: number): Promise<'SOCIO' 
   return data.tipo_cliente === 'SOCIO' ? 'SOCIO' : 'NO_SOCIO';
 }
 
+// Suma/resta días a una fecha "YYYY-MM-DD" sin pasar por husos horarios.
+function sumarDiasAFecha(fecha: string, dias: number): string {
+  const [anio, mes, dia] = fecha.split('-').map(Number);
+  const fechaUTC = new Date(Date.UTC(anio, mes - 1, dia));
+  fechaUTC.setUTCDate(fechaUTC.getUTCDate() + dias);
+  return fechaUTC.toISOString().slice(0, 10);
+}
+
 // Verifica disponibilidad por recurso mediante solapamiento de intervalos (no
 // igualdad de hora_inicio) e ignora reservas PENDIENTE cuyo pago ya venció.
+// Consulta también el día anterior y el siguiente: una reserva/bloqueo nocturno
+// (que cierra a las 00:00/01:00 del día siguiente) puede ocupar minutos de esas
+// fechas vecinas, no solo de `fecha`.
 async function verificarDisponibilidadRecurso(
   fecha: string,
   horaInicio: string,
@@ -731,44 +744,63 @@ async function verificarDisponibilidadRecurso(
   idReservaExcluir?: number
 ) {
   const supabase = createServerComponentClient({ cookies });
+  const fechaAnterior = sumarDiasAFecha(fecha, -1);
+  const fechaSiguiente = sumarDiasAFecha(fecha, 1);
 
   let query = supabase
     .from('reserva')
-    .select('id_reserva, hora_inicio, hora_fin, estado_reserva, fecha_expiracion_pago')
+    .select('id_reserva, fecha_reserva, hora_inicio, hora_fin, estado_reserva, fecha_expiracion_pago')
     .eq('id_recurso', idRecurso)
-    .eq('fecha_reserva', fecha)
+    .gte('fecha_reserva', fechaAnterior)
+    .lte('fecha_reserva', fechaSiguiente)
     .neq('estado_reserva', 'cancelada');
 
   if (idReservaExcluir) {
     query = query.neq('id_reserva', idReservaExcluir);
   }
 
-  const { data: reservasDelDia, error } = await query;
+  const { data: reservasCercanas, error } = await query;
 
   if (error) {
     throw new Error(`Error al verificar disponibilidad del recurso: ${error.message}`);
   }
 
   const ahora = new Date();
-  const conflictos = (reservasDelDia || [])
+  const candidato = { fecha, hora_inicio: horaInicio, hora_fin: horaFin };
+  const conflictos = (reservasCercanas || [])
     .filter(reserva => reservaBloqueaRecurso(reserva, ahora))
-    .filter(reserva => haySolapamientoDeHorarios(horaInicio, horaFin, reserva.hora_inicio, reserva.hora_fin));
+    .filter(reserva => haySolapamientoEntreFechas(candidato, {
+      fecha: reserva.fecha_reserva,
+      hora_inicio: reserva.hora_inicio,
+      hora_fin: reserva.hora_fin
+    }));
 
   if (conflictos.length > 0) {
     const detalle = conflictos
-      .map(c => `${c.hora_inicio.substring(0, 5)}-${c.hora_fin.substring(0, 5)}`)
+      .map(c => `${c.fecha_reserva} ${c.hora_inicio.substring(0, 5)}-${c.hora_fin.substring(0, 5)}`)
       .join(', ');
     throw new Error(`El recurso ya tiene una reserva que se solapa con ese horario (${detalle}).`);
   }
 
-  const bloqueos = await obtenerBloqueosActivosRecurso(fecha, idRecurso);
-  const bloqueosEnConflicto = bloqueos.filter(bloqueo =>
-    haySolapamientoDeHorarios(horaInicio, horaFin, bloqueo.hora_inicio, bloqueo.hora_fin)
+  const { data: bloqueosCercanos, error: errorBloqueos } = await supabase
+    .from('recurso_bloqueo')
+    .select('fecha, hora_inicio, hora_fin')
+    .eq('id_recurso', idRecurso)
+    .eq('activo', true)
+    .gte('fecha', fechaAnterior)
+    .lte('fecha', fechaSiguiente);
+
+  if (errorBloqueos) {
+    throw new Error(`Error al verificar bloqueos del recurso: ${errorBloqueos.message}`);
+  }
+
+  const bloqueosEnConflicto = (bloqueosCercanos || []).filter(bloqueo =>
+    haySolapamientoEntreFechas(candidato, bloqueo)
   );
 
   if (bloqueosEnConflicto.length > 0) {
     const detalle = bloqueosEnConflicto
-      .map(b => `${b.hora_inicio.substring(0, 5)}-${b.hora_fin.substring(0, 5)}`)
+      .map(b => `${b.fecha} ${b.hora_inicio.substring(0, 5)}-${b.hora_fin.substring(0, 5)}`)
       .join(', ');
     throw new Error(`El recurso tiene un bloqueo que se solapa con ese horario (${detalle}).`);
   }
@@ -1082,14 +1114,18 @@ export async function obtenerPermisosReservas() {
   };
 }
 
+// Genera slots de 30 min entre apertura y cierre. El cierre se ancla a la apertura (no a la
+// medianoche) para soportar horarios que cruzan el día ("00:00"/"01:00" del día siguiente);
+// el minuto se devuelve módulo 24h para no mostrar horas inválidas como "24:30".
 function generarSlotsDeMediaHora(horaApertura: string, horaCierre: string): string[] {
   const slots: string[] = [];
   const aperturaMin = horaAMinutos(horaApertura);
-  const cierreMin = horaAMinutos(horaCierre);
+  const cierreMin = puntoRelativoA(horaApertura, horaCierre);
 
   for (let minuto = aperturaMin; minuto + 30 <= cierreMin; minuto += 30) {
-    const hh = Math.floor(minuto / 60).toString().padStart(2, '0');
-    const mm = (minuto % 60).toString().padStart(2, '0');
+    const minutoDelDia = minuto % (24 * 60);
+    const hh = Math.floor(minutoDelDia / 60).toString().padStart(2, '0');
+    const mm = (minutoDelDia % 60).toString().padStart(2, '0');
     slots.push(`${hh}:${mm}`);
   }
 
@@ -1285,14 +1321,14 @@ export async function obtenerDisponibilidadRecursosHoy() {
         if (enMantenimiento) return;
 
         const finSlot = calcularHoraFinPorDuracion(slot, 30);
-        const reservaOcupante = reservasRecurso.find(r => haySolapamientoDeHorarios(slot, finSlot, r.hora_inicio, r.hora_fin));
-        const bloqueoOcupante = bloqueosRecurso.find(b => haySolapamientoDeHorarios(slot, finSlot, b.hora_inicio, b.hora_fin));
+        const reservaOcupante = reservasRecurso.find(r => haySolapamientoDeHorarios(slot, finSlot, r.hora_inicio, r.hora_fin, horario.hora_apertura));
+        const bloqueoOcupante = bloqueosRecurso.find(b => haySolapamientoDeHorarios(slot, finSlot, b.hora_inicio, b.hora_fin, horario.hora_apertura));
 
         if (reservaOcupante) {
           rangosOcupados.add(`${reservaOcupante.hora_inicio.substring(0, 5)}-${reservaOcupante.hora_fin.substring(0, 5)}`);
         } else if (bloqueoOcupante) {
           rangosOcupados.add(`${bloqueoOcupante.hora_inicio.substring(0, 5)}-${bloqueoOcupante.hora_fin.substring(0, 5)}`);
-        } else if (horaAMinutos(slot) <= minutoActual) {
+        } else if (puntoRelativoA(horario.hora_apertura, slot) <= minutoActual) {
           pasados.push(slot);
         } else {
           disponibles.push(slot);
@@ -1359,8 +1395,8 @@ export async function obtenerDisponibilidadSemanalRecurso(idRecurso: number) {
       slots.forEach(slot => {
         const finSlot = calcularHoraFinPorDuracion(slot, 30);
         const ocupado =
-          reservasDelDia.some(r => haySolapamientoDeHorarios(slot, finSlot, r.hora_inicio, r.hora_fin)) ||
-          bloqueosDelDia.some(b => haySolapamientoDeHorarios(slot, finSlot, b.hora_inicio, b.hora_fin));
+          reservasDelDia.some(r => haySolapamientoDeHorarios(slot, finSlot, r.hora_inicio, r.hora_fin, horario.hora_apertura)) ||
+          bloqueosDelDia.some(b => haySolapamientoDeHorarios(slot, finSlot, b.hora_inicio, b.hora_fin, horario.hora_apertura));
 
         if (ocupado) {
           ocupados.push(slot);

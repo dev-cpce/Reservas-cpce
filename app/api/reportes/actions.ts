@@ -2,7 +2,7 @@
 
 import { createServerComponentClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
-import { horaAMinutos } from '@/lib/recursoDisponibilidad';
+import { horaAMinutos, calcularDuracionEnMinutos } from '@/lib/recursoDisponibilidad';
 import { tienePermisoUsuario } from '@/lib/auth/tienePermisoUsuario';
 
 import type {
@@ -758,12 +758,10 @@ export async function obtenerReporteCompleto(
               minutosDisponibles +=
                 Math.max(
                   0,
-                  horaAMinutos(
+                  calcularDuracionEnMinutos(
+                    horario.hora_apertura,
                     horario.hora_cierre
-                  ) -
-                    horaAMinutos(
-                      horario.hora_apertura
-                    )
+                  )
                 );
             }
           }
@@ -797,12 +795,10 @@ export async function obtenerReporteCompleto(
                     total +
                     Math.max(
                       0,
-                      horaAMinutos(
+                      calcularDuracionEnMinutos(
+                        r.hora_inicio,
                         r.hora_fin
-                      ) -
-                        horaAMinutos(
-                          r.hora_inicio
-                        )
+                      )
                     )
                   );
                 }
