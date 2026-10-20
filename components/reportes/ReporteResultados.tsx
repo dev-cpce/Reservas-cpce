@@ -107,7 +107,7 @@ export default function ReporteResultados({ reporte }: ReporteResultadosProps) {
       <TablaSeccionReporte
         titulo="Bloqueos del Período"
         columnas={['Recurso', 'Fecha', 'Hora Inicio', 'Hora Fin', 'Motivo', 'Activo']}
-        filas={bloqueos.map((b) => [b.nombre_recurso, b.fecha, b.hora_inicio?.substring(0, 5) || '', b.hora_fin?.substring(0, 5) || '', b.motivo || '-', b.activo ? 'Sí' : 'No'])}
+        filas={bloqueos.map((b) => [b.nombre_recurso, b.fecha_fin && b.fecha_fin !== b.fecha ? `${b.fecha} - ${b.fecha_fin}` : b.fecha, b.hora_inicio?.substring(0, 5) || '', b.hora_fin?.substring(0, 5) || '', b.motivo || '-', b.activo ? 'Sí' : 'No'])}
       />
 
       {/* 8. Ocupación */}

@@ -821,7 +821,9 @@ export function generarReportePdf(
       ],
       reporte.bloqueos.map((bloqueo) => [
         bloqueo.nombre_recurso,
-        formatearFecha(bloqueo.fecha),
+        bloqueo.fecha_fin && bloqueo.fecha_fin !== bloqueo.fecha
+          ? `${formatearFecha(bloqueo.fecha)} - ${formatearFecha(bloqueo.fecha_fin)}`
+          : formatearFecha(bloqueo.fecha),
         formatearHora(bloqueo.hora_inicio),
         formatearHora(bloqueo.hora_fin),
         bloqueo.motivo || '-',

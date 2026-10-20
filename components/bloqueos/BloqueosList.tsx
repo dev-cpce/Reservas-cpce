@@ -166,7 +166,9 @@ export default function BloqueosList({
               </td>
 
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                {bloqueo.fecha}
+                {bloqueo.fecha_fin && bloqueo.fecha_fin !== bloqueo.fecha
+                  ? `${bloqueo.fecha} al ${bloqueo.fecha_fin}`
+                  : bloqueo.fecha}
               </td>
 
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">

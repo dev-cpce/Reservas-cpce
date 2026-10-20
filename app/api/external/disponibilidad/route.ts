@@ -350,8 +350,12 @@ async function obtenerDisponibilidadRecursos(
         'id_recurso',
         recurso.id_recurso
       )
-      .eq(
+      .lte(
         'fecha',
+        fecha
+      )
+      .gte(
+        'fecha_fin',
         fecha
       )
       .eq(

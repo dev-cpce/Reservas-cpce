@@ -9,7 +9,7 @@ import notifications from '@/lib/notifications';
 
 import {
   obtenerBloqueos,
-  crearBloqueo,
+  crearBloqueosMultiples,
   actualizarBloqueo,
   eliminarBloqueo,
   cambiarEstadoBloqueo
@@ -78,21 +78,21 @@ export default function BloqueosPage() {
 
   // Manejar creación de bloqueo
   const handleCrearBloqueo = async (
-    bloqueo: Omit<
+    nuevos: Omit<
       RecursoBloqueo,
       'id_bloqueo' | 'created_at'
-    >
+    >[]
   ) => {
     setIsLoading(true);
     setErrorMessage('');
 
     try {
-      const nuevoBloqueo =
-        await crearBloqueo(bloqueo);
+      const creados =
+        await crearBloqueosMultiples(nuevos);
 
-      if (nuevoBloqueo) {
+      if (creados.length) {
         setBloqueos(prev => [
-          nuevoBloqueo,
+          ...creados,
           ...prev
         ]);
       }
@@ -238,10 +238,10 @@ export default function BloqueosPage() {
     data: Omit<
       RecursoBloqueo,
       'id_bloqueo' | 'created_at'
-    >
+    >[]
   ) => {
     if (bloqueoEditando) {
-      await handleActualizarBloqueo(data);
+      await handleActualizarBloqueo(data[0]);
     } else {
       await handleCrearBloqueo(data);
     }

@@ -188,10 +188,10 @@ export async function obtenerReporteCompleto(
       let q = supabase
         .from('recurso_bloqueo')
         .select(
-          'id_bloqueo, id_recurso, fecha, hora_inicio, hora_fin, motivo, activo'
+          'id_bloqueo, id_recurso, fecha, fecha_fin, hora_inicio, hora_fin, motivo, activo'
         )
-        .gte('fecha', filtros.fechaDesde)
-        .lte('fecha', filtros.fechaHasta);
+        .lte('fecha', filtros.fechaHasta)
+        .gte('fecha_fin', filtros.fechaDesde);
 
       if (filtros.idRecurso) {
         q = q.eq(
@@ -646,6 +646,7 @@ export async function obtenerReporteCompleto(
           )?.nombre ||
           `Recurso ${b.id_recurso}`,
         fecha: b.fecha,
+        fecha_fin: b.fecha_fin,
         hora_inicio:
           b.hora_inicio,
         hora_fin:

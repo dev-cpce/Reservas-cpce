@@ -149,6 +149,7 @@ useEffect(() => {
 
   const [error, setError] = useState<string>('');
   const [horariosOcupados, setHorariosOcupados] = useState<string[]>([]);
+  const [horariosBloqueados, setHorariosBloqueados] = useState<string[]>([]);
   const [horarioRecurso, setHorarioRecurso] = useState<{ hora_apertura: string; hora_cierre: string } | null>(null);
   const [cargandoHorario, setCargandoHorario] = useState<boolean>(false);
 
@@ -185,11 +186,10 @@ useEffect(() => {
             obtenerBloqueosActivosRecurso(fecha, recursoId)
           ]);
 
-          const ocupados = [
-            ...reservas.map(reserva => `${reserva.hora_inicio}-${reserva.hora_fin}`),
-            ...bloqueos.map(bloqueo => `${bloqueo.hora_inicio}-${bloqueo.hora_fin}`)
-          ];
+          const ocupados = reservas.map(reserva => `${reserva.hora_inicio}-${reserva.hora_fin}`);
+          const bloqueados = bloqueos.map(bloqueo => `${bloqueo.hora_inicio}-${bloqueo.hora_fin}`);
           setHorariosOcupados(ocupados);
+          setHorariosBloqueados(bloqueados);
         } catch {
           // Error silencioso
         }
@@ -288,9 +288,9 @@ useEffect(() => {
     }
 
     const horaFinCandidata = calcularHoraFinPorDuracion(horaInicio, duracionMinutos);
-    const estaOcupado = horariosOcupados.some(horario => {
+    const estaOcupado = [...horariosOcupados, ...horariosBloqueados].some(horario => {
       const [inicioOcupado, finOcupado] = horario.split('-');
-      return haySolapamientoDeHorarios(horaInicio, horaFinCandidata, inicioOcupado, finOcupado);
+      return haySolapamientoDeHorarios(horaInicio, horaFinCandidata, inicioOcupado, finOcupado, horarioRecurso.hora_apertura);
     });
 
     if (estaOcupado) {
@@ -587,10 +587,16 @@ useEffect(() => {
                   </option>
                   {horariosDisponiblesRecurso.map((hora) => {
                     const finHoraCandidata = calcularHoraFinPorDuracion(hora, duracionMinutos);
+                    const horaApertura = horarioRecurso?.hora_apertura;
 
-                    const estaOcupado = horariosOcupados.some(horario => {
+                    const estaBloqueado = horariosBloqueados.some(horario => {
+                      const [inicioBloqueado, finBloqueado] = horario.split('-');
+                      return haySolapamientoDeHorarios(hora, finHoraCandidata, inicioBloqueado, finBloqueado, horaApertura);
+                    });
+
+                    const estaOcupado = !estaBloqueado && horariosOcupados.some(horario => {
                       const [inicioOcupado, finOcupado] = horario.split('-');
-                      return haySolapamientoDeHorarios(hora, finHoraCandidata, inicioOcupado, finOcupado);
+                      return haySolapamientoDeHorarios(hora, finHoraCandidata, inicioOcupado, finOcupado, horaApertura);
                     });
 
                     const horaYaPaso = (() => {
@@ -619,7 +625,11 @@ useEffect(() => {
                     let textoAdicional = '';
                     let estaDeshabilitado = false;
                     
-                    if (estaOcupado) {
+                    if (estaBloqueado) {
+                      className = 'text-red-500 bg-red-50';
+                      textoAdicional = ' (Bloqueado)';
+                      estaDeshabilitado = true;
+                    } else if (estaOcupado) {
                       className = 'text-red-500 bg-red-50';
                       textoAdicional = ' (Ocupado)';
                       estaDeshabilitado = true;

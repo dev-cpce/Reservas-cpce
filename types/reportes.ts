@@ -78,6 +78,7 @@ export interface BloqueoReporte {
   id_recurso: number;
   nombre_recurso: string;
   fecha: string;
+  fecha_fin: string;
   hora_inicio: string;
   hora_fin: string;
   motivo: string | null;

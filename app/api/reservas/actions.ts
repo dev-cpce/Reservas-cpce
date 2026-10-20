@@ -12,6 +12,8 @@ import {
   calcularHoraFinPorDuracion,
   haySolapamientoDeHorarios,
   haySolapamientoEntreFechas,
+  expandirRangoBloqueo,
+  sumarDiasAFecha,
   reservaBloqueaRecurso,
   horaAMinutos,
   puntoRelativoA
@@ -655,7 +657,8 @@ export async function obtenerBloqueosActivosRecurso(fecha: string, idRecurso: nu
       .from('recurso_bloqueo')
       .select('hora_inicio, hora_fin')
       .eq('id_recurso', idRecurso)
-      .eq('fecha', fecha)
+      .lte('fecha', fecha)
+      .gte('fecha_fin', fecha)
       .eq('activo', true);
 
     if (error) {
@@ -723,13 +726,6 @@ async function obtenerTipoClienteParaTarifa(idCliente: number): Promise<'SOCIO' 
   return data.tipo_cliente === 'SOCIO' ? 'SOCIO' : 'NO_SOCIO';
 }
 
-// Suma/resta días a una fecha "YYYY-MM-DD" sin pasar por husos horarios.
-function sumarDiasAFecha(fecha: string, dias: number): string {
-  const [anio, mes, dia] = fecha.split('-').map(Number);
-  const fechaUTC = new Date(Date.UTC(anio, mes - 1, dia));
-  fechaUTC.setUTCDate(fechaUTC.getUTCDate() + dias);
-  return fechaUTC.toISOString().slice(0, 10);
-}
 
 // Verifica disponibilidad por recurso mediante solapamiento de intervalos (no
 // igualdad de hora_inicio) e ignora reservas PENDIENTE cuyo pago ya venció.
@@ -784,17 +780,23 @@ async function verificarDisponibilidadRecurso(
 
   const { data: bloqueosCercanos, error: errorBloqueos } = await supabase
     .from('recurso_bloqueo')
-    .select('fecha, hora_inicio, hora_fin')
+    .select('fecha, fecha_fin, hora_inicio, hora_fin')
     .eq('id_recurso', idRecurso)
     .eq('activo', true)
-    .gte('fecha', fechaAnterior)
-    .lte('fecha', fechaSiguiente);
+    .lte('fecha', fechaSiguiente)
+    .gte('fecha_fin', fechaAnterior);
 
   if (errorBloqueos) {
     throw new Error(`Error al verificar bloqueos del recurso: ${errorBloqueos.message}`);
   }
 
-  const bloqueosEnConflicto = (bloqueosCercanos || []).filter(bloqueo =>
+  // Cada bloqueo puede abarcar varios días; se expande a una entrada por día dentro
+  // de la ventana [fechaAnterior, fechaSiguiente] para comparar contra el candidato.
+  const bloqueosExpandidos = (bloqueosCercanos || []).flatMap(b =>
+    expandirRangoBloqueo(b, fechaAnterior, fechaSiguiente)
+  );
+
+  const bloqueosEnConflicto = bloqueosExpandidos.filter(bloqueo =>
     haySolapamientoEntreFechas(candidato, bloqueo)
   );
 
@@ -1274,7 +1276,7 @@ export async function obtenerDisponibilidadRecursosHoy() {
     const [{ data: horarios }, { data: reservasHoy }, { data: bloqueosHoy }] = await Promise.all([
       supabase.from('recurso_horario').select('id_recurso, hora_apertura, hora_cierre').in('id_recurso', idsRecurso).eq('dia_semana', diaSemana).eq('activo', true),
       supabase.from('reserva').select('id_recurso, hora_inicio, hora_fin, estado_reserva, fecha_expiracion_pago').in('id_recurso', idsRecurso).eq('fecha_reserva', hoy).neq('estado_reserva', 'cancelada'),
-      supabase.from('recurso_bloqueo').select('id_recurso, hora_inicio, hora_fin').in('id_recurso', idsRecurso).eq('fecha', hoy).eq('activo', true)
+      supabase.from('recurso_bloqueo').select('id_recurso, hora_inicio, hora_fin').in('id_recurso', idsRecurso).lte('fecha', hoy).gte('fecha_fin', hoy).eq('activo', true)
     ]);
 
     const ahora = new Date();
@@ -1369,10 +1371,16 @@ export async function obtenerDisponibilidadSemanalRecurso(idRecurso: number) {
     const [{ data: horarios }, { data: reservas }, { data: bloqueos }] = await Promise.all([
       supabase.from('recurso_horario').select('dia_semana, hora_apertura, hora_cierre').eq('id_recurso', idRecurso).eq('activo', true),
       supabase.from('reserva').select('fecha_reserva, hora_inicio, hora_fin, estado_reserva, fecha_expiracion_pago').eq('id_recurso', idRecurso).gte('fecha_reserva', fechas[0]).lte('fecha_reserva', fechas[6]).neq('estado_reserva', 'cancelada'),
-      supabase.from('recurso_bloqueo').select('fecha, hora_inicio, hora_fin').eq('id_recurso', idRecurso).eq('activo', true).gte('fecha', fechas[0]).lte('fecha', fechas[6])
+      supabase.from('recurso_bloqueo').select('fecha, fecha_fin, hora_inicio, hora_fin').eq('id_recurso', idRecurso).eq('activo', true).lte('fecha', fechas[6]).gte('fecha_fin', fechas[0])
     ]);
 
     const ahora = new Date();
+
+    // Expande cada bloqueo (que puede abarcar varios días) a una entrada por día
+    // dentro de la semana consultada, para poder filtrar por `fecha === día` abajo.
+    const bloqueosExpandidos = (bloqueos || []).flatMap(b =>
+      expandirRangoBloqueo(b, fechas[0], fechas[6])
+    );
 
     return fechas.map(fecha => {
       const [year, month, day] = fecha.split('-').map(Number);
@@ -1386,7 +1394,7 @@ export async function obtenerDisponibilidadSemanalRecurso(idRecurso: number) {
       const reservasDelDia = (reservas || [])
         .filter(r => r.fecha_reserva === fecha)
         .filter(r => reservaBloqueaRecurso(r, ahora));
-      const bloqueosDelDia = (bloqueos || []).filter(b => b.fecha === fecha);
+      const bloqueosDelDia = bloqueosExpandidos.filter(b => b.fecha === fecha);
 
       const slots = generarSlotsDeMediaHora(horario.hora_apertura, horario.hora_cierre);
       const disponibles: string[] = [];

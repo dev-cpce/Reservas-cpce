@@ -67,6 +67,47 @@ export interface IntervaloFechado {
   hora_fin: string;
 }
 
+// Suma/resta días a una fecha "YYYY-MM-DD" sin pasar por husos horarios.
+export function sumarDiasAFecha(fecha: string, dias: number): string {
+  const [anio, mes, dia] = fecha.split('-').map(Number);
+  const fechaUTC = new Date(Date.UTC(anio, mes - 1, dia));
+  fechaUTC.setUTCDate(fechaUTC.getUTCDate() + dias);
+  return fechaUTC.toISOString().slice(0, 10);
+}
+
+export interface IntervaloConRangoDeFechas {
+  fecha: string; // YYYY-MM-DD (inicio del bloqueo)
+  fecha_fin?: string | null; // YYYY-MM-DD (fin del bloqueo); si falta, se asume igual a `fecha`
+  hora_inicio: string;
+  hora_fin: string;
+}
+
+// Un bloqueo puede abarcar varios días (`fecha`..`fecha_fin`) con el mismo horario
+// repetido cada día. Para reutilizar `haySolapamientoEntreFechas` (que compara
+// intervalos de un solo día) sin tocarla, esta función expande un bloqueo en una
+// entrada por cada día dentro de la intersección de su rango con [desde, hasta].
+// Los bloqueos antiguos (sin `fecha_fin`, o con `fecha_fin` igual a `fecha`) generan
+// una sola entrada, igual que antes de soportar rangos.
+export function expandirRangoBloqueo<T extends IntervaloConRangoDeFechas>(
+  bloqueo: T,
+  desde: string,
+  hasta: string
+): (T & { fecha: string })[] {
+  const finBloqueo = bloqueo.fecha_fin || bloqueo.fecha;
+  const inicio = bloqueo.fecha > desde ? bloqueo.fecha : desde;
+  const fin = finBloqueo < hasta ? finBloqueo : hasta;
+
+  if (inicio > fin) return [];
+
+  const resultado: (T & { fecha: string })[] = [];
+  let cursor = inicio;
+  while (cursor <= fin) {
+    resultado.push({ ...bloqueo, fecha: cursor });
+    cursor = sumarDiasAFecha(cursor, 1);
+  }
+  return resultado;
+}
+
 function diasDesdeEpoch(fecha: string): number {
   const [anio, mes, dia] = fecha.split('-').map(Number);
   return Date.UTC(anio, mes - 1, dia) / (24 * 60 * 60 * 1000);

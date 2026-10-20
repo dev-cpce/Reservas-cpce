@@ -46,6 +46,7 @@ export interface RecursoBloqueo {
     id_bloqueo: number;
     id_recurso: number;
     fecha: string;
+    fecha_fin: string;
     hora_inicio: string;
     hora_fin: string;
     motivo: string | null;
