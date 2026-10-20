@@ -515,7 +515,8 @@ async function obtenerDisponibilidadRecursos(
                   120
                 ),
                 ocupado.hora_inicio,
-                ocupado.hora_fin
+                ocupado.hora_fin,
+                horario.hora_apertura
               )
           );
 
@@ -535,7 +536,8 @@ async function obtenerDisponibilidadRecursos(
                   90
                 ),
                 ocupado.hora_inicio,
-                ocupado.hora_fin
+                ocupado.hora_fin,
+                horario.hora_apertura
               )
           );
 
