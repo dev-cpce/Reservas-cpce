@@ -95,7 +95,15 @@ export async function GET(
       .from('mensaje')
       .select('id, direccion, origen, texto, estado, error_detalle, wa_message_id, created_at')
       .eq('id_conversacion', idConversacion)
-      .order('created_at', { ascending: false })
+      // Se ordena por id (orden real de inserción) y no por created_at: los
+      // mensajes entrantes guardan el timestamp que informa WhatsApp y los
+      // salientes la hora de inserción del bot/empleado, por lo que no son
+      // comparables entre sí cuando hay latencia de procesamiento (el
+      // cliente puede escribir de nuevo antes de que se registre la
+      // respuesta anterior). El id coincide con el orden de llegada que ya
+      // usa el agregado de Realtime, evitando que el historial se vea
+      // distinto al recargar la página.
+      .order('id', { ascending: false })
       .limit(LIMITE_MENSAJES);
 
     if (errorMensajes) {

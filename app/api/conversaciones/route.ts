@@ -104,9 +104,13 @@ export async function GET() {
     if (idsConversaciones.length > 0) {
       const { data: mensajesRecientes } = await supabase
         .from('mensaje')
-        .select('id_conversacion, texto, direccion, origen, created_at')
+        .select('id, id_conversacion, texto, direccion, origen, created_at')
         .in('id_conversacion', idsConversaciones)
-        .order('created_at', { ascending: false })
+        // Se ordena por id y no por created_at: entrante guarda el timestamp
+        // de WhatsApp y saliente la hora de inserción del bot/empleado, que
+        // no son comparables entre sí; el id refleja el orden real de
+        // inserción, igual que el historial de la conversación.
+        .order('id', { ascending: false })
         .limit(LIMITE_MENSAJES_PREVIEW);
 
       // Al venir ordenado descendente, la primera aparición de cada
