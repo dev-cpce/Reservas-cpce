@@ -5,6 +5,8 @@ import { usePathname, useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { useSupabaseClient, useUser } from '@supabase/auth-helpers-react';
 
+import NotificacionModoHumano from './NotificacionModoHumano';
+
 interface NavbarProps {
   title?: string;
 }
@@ -52,8 +54,8 @@ export default function Navbar({ title }: NavbarProps) {
       <h1 className="text-2xl font-bold text-gray-900">{getTitle()}</h1>
       
       <div className="flex items-center gap-4">
-    
-        
+        <NotificacionModoHumano />
+
         <div className="flex items-center gap-3">
           <div className="h-9 w-9 rounded-full bg-gray-200 flex items-center justify-center overflow-hidden">
             <Image 

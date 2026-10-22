@@ -6,6 +6,7 @@ import type { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase } from './supabaseClient';
 import type {
   ApiResponse,
+  ConteoModoHumanoResponse,
   ConversacionResumen,
   EnviarMensajeResponse,
   HistorialMensajesResponse,
@@ -361,4 +362,67 @@ export function useConversacionDetalle(
     cambiarModo,
     marcarLeido,
   };
+}
+
+/**
+ * Cantidad de conversaciones en modo humano, para el indicador global del
+ * panel (Navbar). Se actualiza en tiempo real ante cambios en `conversacion`
+ * (no solo UPDATEs de modo: un INSERT o DELETE también puede afectar el
+ * conteo), con el mismo patrón de debounce que `useConversacionesRealtime`.
+ */
+export function useConversacionesModoHumanoCount() {
+  const [count, setCount] = useState(0);
+  const [realtimeDisponible, setRealtimeDisponible] = useState(true);
+
+  const cargarConteo = useCallback(async () => {
+    try {
+      const response = await fetch('/api/conversaciones/modo-humano/count');
+      const payload: ApiResponse<ConteoModoHumanoResponse> = await response.json();
+
+      if (response.ok && payload.success && payload.data) {
+        setCount(payload.data.count);
+      }
+    } catch {
+      // El indicador es informativo: si falla la carga, simplemente no se
+      // actualiza el número (no rompe el resto del panel).
+    }
+  }, []);
+
+  useEffect(() => {
+    let activo = true;
+    let debounceTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    cargarConteo();
+
+    const refrescarConDebounce = () => {
+      if (debounceTimeout) clearTimeout(debounceTimeout);
+
+      debounceTimeout = setTimeout(() => {
+        if (activo) cargarConteo();
+      }, DEBOUNCE_REFRESCO_MS);
+    };
+
+    const channel: RealtimeChannel = supabase
+      .channel('navbar-conversaciones-modo-humano')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'conversacion' },
+        () => {
+          if (!activo) return;
+          refrescarConDebounce();
+        }
+      )
+      .subscribe((status) => {
+        if (!activo) return;
+        setRealtimeDisponible(status === 'SUBSCRIBED');
+      });
+
+    return () => {
+      activo = false;
+      if (debounceTimeout) clearTimeout(debounceTimeout);
+      supabase.removeChannel(channel);
+    };
+  }, [cargarConteo]);
+
+  return { count, realtimeDisponible };
 }

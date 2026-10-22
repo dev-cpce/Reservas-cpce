@@ -337,8 +337,15 @@ export async function obtenerReservasPorDiaSemana() {
   }
 }
 
+// Plazo (minutos) solo para reservas legacy sin fecha_expiracion_pago.
+// El plazo real de las reservas nuevas lo fija crear_reserva_recurso en la base.
+function minutosPlazoLegacy(): number {
+  const valor = Number(process.env.AUTOCANCEL_MINUTOS);
+  return Number.isFinite(valor) && valor > 0 ? Math.floor(valor) : 5;
+}
+
 // Función para obtener reservas pendientes que exceden el tiempo límite
-export async function obtenerReservasPendientesVencidas(tiempoLimiteMinutos = 5) {
+export async function obtenerReservasPendientesVencidas(tiempoLimiteMinutos = minutosPlazoLegacy()) {
   // Usar Service Role Key para procesos automáticos (no cookies de usuario)
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -352,15 +359,18 @@ export async function obtenerReservasPendientesVencidas(tiempoLimiteMinutos = 5)
   try {
     // No necesitamos verificar conectividad de usuario para procesos automáticos
     
-    // Calcular el timestamp límite (5 minutos atrás)
-    const tiempoLimite = new Date();
-    tiempoLimite.setMinutes(tiempoLimite.getMinutes() - tiempoLimiteMinutos);
+    // Calcular el timestamp límite solo para reservas legacy sin fecha_expiracion_pago
+    const ahora = new Date();
+    const tiempoLimite = new Date(ahora.getTime() - tiempoLimiteMinutos * 60 * 1000);
     
+    // Se respeta fecha_expiracion_pago (la misma que usa la disponibilidad); created_at es solo respaldo.
     const { data, error } = await supabase
       .from('reserva')
       .select('id_reserva, fecha_reserva, hora_inicio, created_at, estado_reserva')
       .eq('estado_reserva', 'pendiente')
-      .lt('created_at', tiempoLimite.toISOString());
+      .or(
+        `fecha_expiracion_pago.lt.${ahora.toISOString()},and(fecha_expiracion_pago.is.null,created_at.lt.${tiempoLimite.toISOString()})`
+      );
     
     if (error) {
       await logSystemEvent({
@@ -450,7 +460,8 @@ export async function cancelarReservasPendientesVencidas() {
     
     // Camino atómico: una RPC bloquea, revalida pagos y cancela en la base de datos.
     const { data: canceladasRpc, error: rpcError } = await supabase.rpc(
-      'cancelar_reservas_pendientes_vencidas'
+      'cancelar_reservas_pendientes_vencidas',
+      { p_minutos_legacy: minutosPlazoLegacy() }
     );
 
     if (!rpcError) {

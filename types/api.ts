@@ -233,6 +233,10 @@ export interface ListaConversacionesResponse {
   conversaciones: ConversacionResumen[];
 }
 
+export interface ConteoModoHumanoResponse {
+  count: number;
+}
+
 export interface MensajeHistorial {
   id: number;
   direccion: 'entrante' | 'saliente';

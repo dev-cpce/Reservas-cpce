@@ -34,6 +34,7 @@ export default function ReservaForm({
   const [recursoId, setRecursoId] = useState<number>(reserva?.id_recurso || 0);
   
   const [busquedaCliente, setBusquedaCliente] = useState<string>('');
+  const [clienteSeleccionado, setClienteSeleccionado] = useState<Cliente | null>(null);
   const [clientesFiltrados, setClientesFiltrados] = useState<Cliente[]>([]);
   const [mostrarCrearCliente, setMostrarCrearCliente] = useState<boolean>(false);
   const [nuevoCliente, setNuevoCliente] = useState({
@@ -98,8 +99,9 @@ useEffect(() => {
       // Actualizar el estado para incluir el nuevo cliente - usar solo el ID
       if (clienteCreado) {
         setClienteId(clienteCreado.id_cliente);
+        setClienteSeleccionado(clienteCreado);
       }
-      setBusquedaCliente(`${nuevoCliente.nombre} ${nuevoCliente.apellido}`);
+      setBusquedaCliente('');
       
       // Limpiar el formulario de nuevo cliente
       setNuevoCliente({ nombre: '', apellido: '', telefono: '' });
@@ -387,7 +389,8 @@ useEffect(() => {
                       }`}
                       onClick={() => {
                         setClienteId(cliente.id_cliente);
-                        setBusquedaCliente(`${cliente.nombre} ${cliente.apellido}`);
+                        setClienteSeleccionado(cliente);
+                        setBusquedaCliente('');
                       }}
                     >
                       <div>
@@ -422,7 +425,7 @@ useEffect(() => {
             {clienteId > 0 && !busquedaCliente && (
               <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-md">
                 <div className="text-sm font-medium text-green-800">
-                  Cliente seleccionado: {clientes.find(c => c.id_cliente === clienteId)?.nombre} {clientes.find(c => c.id_cliente === clienteId)?.apellido}
+                  Cliente seleccionado: {(clienteSeleccionado ?? clientes.find(c => c.id_cliente === clienteId))?.nombre} {(clienteSeleccionado ?? clientes.find(c => c.id_cliente === clienteId))?.apellido}
                 </div>
               </div>
             )}
