@@ -19,6 +19,8 @@ export default function ClienteForm({
   const [nombre, setNombre] = useState(cliente?.nombre || '');
   const [apellido, setApellido] = useState(cliente?.apellido || '');
   const [telefono, setTelefono] = useState(cliente?.telefono || '');
+  const [nroMatricula, setNroMatricula] = useState(cliente?.nro_matricula || '');
+  const [letra, setLetra] = useState(cliente?.letra || '');
   // Clientes existentes sin tipo_cliente (NULL) se muestran como NO_SOCIO por defecto.
   const [tipoCliente, setTipoCliente] = useState<'SOCIO' | 'NO_SOCIO'>(cliente?.tipo_cliente || 'NO_SOCIO');
   const [error, setError] = useState('');
@@ -44,7 +46,11 @@ export default function ClienteForm({
         nombre,
         apellido,
         telefono,
-        tipo_cliente: tipoCliente
+        tipo_cliente: tipoCliente,
+        // Matrícula y letra son opcionales: un cliente particular
+        // (no socio) puede no tenerlas.
+        nro_matricula: nroMatricula.trim() || null,
+        letra: letra.trim() || null
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ha ocurrido un error al guardar el cliente');
@@ -105,6 +111,36 @@ export default function ClienteForm({
             placeholder="+54 (11) 1234-5678"
             required
           />
+        </div>
+
+        <div className="mb-4 grid grid-cols-2 gap-4">
+          <div>
+            <label htmlFor="nro_matricula" className="block mb-2 text-sm font-medium text-gray-700">
+              N° de matrícula <span className="text-gray-400 font-normal">(opcional)</span>
+            </label>
+            <input
+              type="text"
+              id="nro_matricula"
+              value={nroMatricula}
+              onChange={(e) => setNroMatricula(e.target.value)}
+              className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Ej: 12345"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="letra" className="block mb-2 text-sm font-medium text-gray-700">
+              Letra <span className="text-gray-400 font-normal">(opcional)</span>
+            </label>
+            <input
+              type="text"
+              id="letra"
+              value={letra}
+              onChange={(e) => setLetra(e.target.value)}
+              className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Ej: A"
+            />
+          </div>
         </div>
         
         <div className="mb-4">

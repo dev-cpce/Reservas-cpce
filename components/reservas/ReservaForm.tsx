@@ -40,7 +40,9 @@ export default function ReservaForm({
   const [nuevoCliente, setNuevoCliente] = useState({
     nombre: '',
     apellido: '',
-    telefono: ''
+    telefono: '',
+    nro_matricula: '',
+    letra: ''
   });
   const [creandoCliente, setCreandoCliente] = useState<boolean>(false);
   
@@ -87,7 +89,9 @@ useEffect(() => {
       const clienteCreado = await crearCliente({
         nombre: nuevoCliente.nombre.trim(),
         apellido: nuevoCliente.apellido.trim(),
-        telefono: nuevoCliente.telefono.trim()
+        telefono: nuevoCliente.telefono.trim(),
+        nro_matricula: nuevoCliente.nro_matricula.trim() || null,
+        letra: nuevoCliente.letra.trim() || null
       });
 
       // El clienteCreado ya es el objeto cliente completo de la BD
@@ -104,7 +108,7 @@ useEffect(() => {
       setBusquedaCliente('');
       
       // Limpiar el formulario de nuevo cliente
-      setNuevoCliente({ nombre: '', apellido: '', telefono: '' });
+      setNuevoCliente({ nombre: '', apellido: '', telefono: '', nro_matricula: '', letra: '' });
       setMostrarCrearCliente(false);
       
     } catch (error) {
@@ -359,7 +363,7 @@ useEffect(() => {
               <input
                 type="text"
                 className="pl-10 pr-10 mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50"
-                placeholder="Buscar cliente por nombre, apellido o teléfono..."
+                placeholder="Buscar cliente por matrícula, nombre, apellido o teléfono..."
                 value={busquedaCliente}
                 onChange={(e) => setBusquedaCliente(e.target.value)}
                 disabled={isSubmitting}
@@ -399,6 +403,8 @@ useEffect(() => {
                         </div>
                         <div className="text-sm text-gray-500">
                           {cliente.telefono && `Tel: ${cliente.telefono}`}
+                          {cliente.nro_matricula &&
+                            `${cliente.telefono ? ' · ' : ''}Matrícula: ${cliente.letra ? `${cliente.letra} ` : ''}${cliente.nro_matricula}`}
                         </div>
                       </div>
                       {clienteId === cliente.id_cliente && (
@@ -441,7 +447,7 @@ useEffect(() => {
                     type="button"
                     onClick={() => {
                       setMostrarCrearCliente(false);
-                      setNuevoCliente({ nombre: '', apellido: '', telefono: '' });
+                      setNuevoCliente({ nombre: '', apellido: '', telefono: '', nro_matricula: '', letra: '' });
                     }}
                     className="text-gray-400 hover:text-gray-600"
                   >
@@ -481,6 +487,30 @@ useEffect(() => {
                       onChange={(e) => setNuevoCliente({...nuevoCliente, telefono: e.target.value})}
                     />
                   </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">N° de matrícula</label>
+                      <input
+                        type="text"
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50"
+                        placeholder="Opcional"
+                        value={nuevoCliente.nro_matricula}
+                        onChange={(e) => setNuevoCliente({...nuevoCliente, nro_matricula: e.target.value})}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">Letra</label>
+                      <input
+                        type="text"
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50"
+                        placeholder="Opcional"
+                        value={nuevoCliente.letra}
+                        onChange={(e) => setNuevoCliente({...nuevoCliente, letra: e.target.value})}
+                      />
+                    </div>
+                  </div>
                 </div>
                 
                 <div className="mt-6 flex justify-end space-x-3">
@@ -488,7 +518,7 @@ useEffect(() => {
                     type="button"
                     onClick={() => {
                       setMostrarCrearCliente(false);
-                      setNuevoCliente({ nombre: '', apellido: '', telefono: '' });
+                      setNuevoCliente({ nombre: '', apellido: '', telefono: '', nro_matricula: '', letra: '' });
                     }}
                     className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50"
                     disabled={creandoCliente}

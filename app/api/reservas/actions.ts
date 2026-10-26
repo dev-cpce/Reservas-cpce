@@ -84,6 +84,30 @@ const verificarConectividad = async (supabase: ReturnType<typeof createServerCom
   }
 };
 
+// Reasignar reservas ya confirmadas/canceladas con pago solo lo pueden hacer ADMIN y GERENCIA.
+async function puedeReasignarReservas(): Promise<boolean> {
+  const perfil = await obtenerPerfil();
+  return perfil?.rol === 'ADMIN' || perfil?.rol === 'GERENCIA';
+}
+
+async function reservaTienePagoAprobado(
+  supabase: ReturnType<typeof createServerComponentClient>,
+  idReserva: number
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('pago')
+    .select('id_pago')
+    .eq('id_reserva', idReserva)
+    .eq('estado_pago', 'aprobado')
+    .limit(1);
+
+  if (error) {
+    throw new Error(`Error al verificar el pago de la reserva: ${error.message}`);
+  }
+
+  return (data?.length ?? 0) > 0;
+}
+
 // Obtener todas las reservas
 export async function obtenerReservas() {
   try {
@@ -104,8 +128,20 @@ export async function obtenerReservas() {
     const filas = reservas || [];
     const { clientes, recursos } = await cargarRelacionesReservas(supabase, filas);
 
+    const idsConPago = new Set<number>();
+    const idsReservas = filas.map(r => r.id_reserva);
+    if (idsReservas.length > 0) {
+      const { data: pagos } = await supabase
+        .from('pago')
+        .select('id_reserva')
+        .eq('estado_pago', 'aprobado')
+        .in('id_reserva', idsReservas);
+      (pagos ?? []).forEach(p => idsConPago.add(p.id_reserva));
+    }
+
     return filas.map(reserva => ({
       ...reserva,
+      tiene_pago_aprobado: idsConPago.has(reserva.id_reserva),
       cliente: clientes.get(reserva.id_cliente) || null,
       recurso: recursos.get(reserva.id_recurso) || null
     }));
@@ -208,6 +244,24 @@ if (!reservaAntes) {
 }
 
   estadoAnterior = reservaAntes.estado_reserva;
+
+  // Aprobar una reserva cancelada (pago tardío): solo ADMIN/GERENCIA, con pago
+  // aprobado y revalidando que el horario siga libre.
+  if (estado === 'confirmada' && estadoAnterior === 'cancelada') {
+    if (!(await puedeReasignarReservas())) {
+      throw new Error('Solo ADMIN o GERENCIA pueden aprobar una reserva cancelada.');
+    }
+    if (!(await reservaTienePagoAprobado(supabase, id))) {
+      throw new Error('La reserva cancelada no tiene un pago aprobado asociado.');
+    }
+    await verificarDisponibilidadRecurso(
+      reservaAntes.fecha_reserva,
+      reservaAntes.hora_inicio,
+      reservaAntes.hora_fin,
+      reservaAntes.id_recurso,
+      id
+    );
+  }
 
   const { data: filasActualizadas, error } = await supabase
     .from('reserva')
@@ -974,10 +1028,37 @@ export async function actualizarReservaRecurso(
 
   const horaFin = calcularHoraFinPorDuracion(datos.hora_inicio, datos.duracion_minutos);
 
+  const { data: reservaActual, error: errorActual } = await supabase
+    .from('reserva')
+    .select('estado_reserva')
+    .eq('id_reserva', id)
+    .maybeSingle();
+
+  if (errorActual || !reservaActual) {
+    throw new Error('La reserva no existe.');
+  }
+
+  // Confirmadas/canceladas solo se reasignan (ADMIN/GERENCIA) si tienen pago aprobado;
+  // se conserva el costo ya abonado.
+  const esReasignacion = ['confirmada', 'cancelada'].includes(reservaActual.estado_reserva);
+
+  if (esReasignacion) {
+    if (!(await puedeReasignarReservas())) {
+      throw new Error('Solo ADMIN o GERENCIA pueden editar reservas confirmadas o canceladas.');
+    }
+    if (!(await reservaTienePagoAprobado(supabase, id))) {
+      throw new Error('Solo se pueden editar reservas confirmadas o canceladas con un pago aprobado asociado.');
+    }
+  }
+
   await verificarDisponibilidadRecurso(datos.fecha_reserva, datos.hora_inicio, horaFin, datos.id_recurso, id);
 
   const tipoCliente = await obtenerTipoClienteParaTarifa(datos.id_cliente);
   const costoReserva = await calcularCostoReservaPorRecurso(datos.id_recurso, tipoCliente, datos.duracion_minutos);
+
+  // Reasignar una reserva cancelada con pago aprobado la confirma de una: ya
+  // tiene el pago y el nuevo horario quedó validado como libre arriba.
+  const estadoNuevo = esReasignacion ? 'confirmada' : undefined;
 
   const { error } = await supabase
     .from('reserva')
@@ -988,7 +1069,8 @@ export async function actualizarReservaRecurso(
       hora_inicio: datos.hora_inicio,
       hora_fin: horaFin,
       duracion_minutos: datos.duracion_minutos,
-      costo_reserva: costoReserva
+      ...(esReasignacion ? {} : { costo_reserva: costoReserva }),
+      ...(estadoNuevo ? { estado_reserva: estadoNuevo } : {})
     })
     .eq('id_reserva', id);
 
@@ -999,8 +1081,10 @@ export async function actualizarReservaRecurso(
   await logSystemEvent({
     level: 'info',
     source: 'reservas',
-    event: 'RESERVA_UPDATED',
-    message: 'Reserva actualizada correctamente',
+    event: estadoNuevo ? 'RESERVA_REASIGNADA' : 'RESERVA_UPDATED',
+    message: estadoNuevo
+      ? `Reserva reasignada y confirmada (estado anterior: ${reservaActual.estado_reserva})`
+      : 'Reserva actualizada correctamente',
     requestId,
     userId,
     metadata: {
@@ -1013,6 +1097,8 @@ export async function actualizarReservaRecurso(
       hora_fin: horaFin,
       duracion_minutos: datos.duracion_minutos,
       costo_reserva: costoReserva,
+      estado_anterior: reservaActual.estado_reserva,
+      estado_nuevo: estadoNuevo ?? reservaActual.estado_reserva,
     },
   });
 
@@ -1120,10 +1206,12 @@ export async function eliminarReservaRecurso(id: number) {
 export async function obtenerPermisosReservas() {
   const puedeEliminar = await tienePermisoUsuario('reservas.eliminar');
   const puedeCancelar = await tienePermisoUsuario('reservas.cancelar');
+  const puedeReasignar = await puedeReasignarReservas();
 
   return {
     puedeEliminar,
     puedeCancelar,
+    puedeReasignar,
   };
 }
 

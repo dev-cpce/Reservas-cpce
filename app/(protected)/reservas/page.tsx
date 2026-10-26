@@ -38,6 +38,7 @@ export default function ReservasPage() {
   const [permisosReservas, setPermisosReservas] = useState({
     puedeEliminar: false,
     puedeCancelar: false,
+    puedeReasignar: false,
   });
 
   // Cargar datos al inicio
@@ -73,6 +74,7 @@ export default function ReservasPage() {
           return {
             puedeEliminar: false,
             puedeCancelar: false,
+            puedeReasignar: false,
           };
         }),
       ]);
@@ -229,6 +231,7 @@ export default function ReservasPage() {
 
           puedeEliminar={permisosReservas.puedeEliminar}
           puedeCancelar={permisosReservas.puedeCancelar}
+          puedeReasignar={permisosReservas.puedeReasignar}
         />
       )}
 

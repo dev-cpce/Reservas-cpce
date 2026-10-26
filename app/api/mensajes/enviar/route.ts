@@ -133,6 +133,9 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    
+    // const destinatarioPrueba = '543834966666';
+    // const resultadoEnvio = await enviarTextoWhatsApp(destinatarioPrueba, texto);
     const resultadoEnvio = await enviarTextoWhatsApp(conversacion.chat_id, texto);
     const ahora = new Date().toISOString();
 
