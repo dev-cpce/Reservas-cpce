@@ -98,6 +98,47 @@ export async function crearBloqueo(
 }
 
 /**
+ * Crea varios bloqueos de una vez (múltiples recursos y/o rango de fechas).
+ */
+export async function crearBloqueosMultiples(
+  bloqueos: Omit<
+    RecursoBloqueo,
+    'id_bloqueo' | 'created_at'
+  >[]
+) {
+  const permitido = await tienePermisoUsuario(
+    'bloqueos.crear'
+  );
+
+  if (!permitido) {
+    throw new Error(
+      'No tenés permisos para crear bloqueos.'
+    );
+  }
+
+  if (!bloqueos.length || bloqueos.length > 1000) {
+    throw new Error(
+      'Cantidad de bloqueos inválida'
+    );
+  }
+
+  const supabase = createServerComponentClient({ cookies });
+
+  const { data, error } = await supabase
+    .from('recurso_bloqueo')
+    .insert(bloqueos)
+    .select();
+
+  if (error) {
+    throw new Error(
+      'No se pudieron crear los bloqueos'
+    );
+  }
+
+  return data || [];
+}
+
+/**
  * Actualiza un bloqueo existente.
  */
 export async function actualizarBloqueo(

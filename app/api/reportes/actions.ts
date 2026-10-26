@@ -2,7 +2,7 @@
 
 import { createServerComponentClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
-import { horaAMinutos } from '@/lib/recursoDisponibilidad';
+import { horaAMinutos, calcularDuracionEnMinutos } from '@/lib/recursoDisponibilidad';
 import { tienePermisoUsuario } from '@/lib/auth/tienePermisoUsuario';
 
 import type {
@@ -188,10 +188,10 @@ export async function obtenerReporteCompleto(
       let q = supabase
         .from('recurso_bloqueo')
         .select(
-          'id_bloqueo, id_recurso, fecha, hora_inicio, hora_fin, motivo, activo'
+          'id_bloqueo, id_recurso, fecha, fecha_fin, hora_inicio, hora_fin, motivo, activo'
         )
-        .gte('fecha', filtros.fechaDesde)
-        .lte('fecha', filtros.fechaHasta);
+        .lte('fecha', filtros.fechaHasta)
+        .gte('fecha_fin', filtros.fechaDesde);
 
       if (filtros.idRecurso) {
         q = q.eq(
@@ -646,6 +646,7 @@ export async function obtenerReporteCompleto(
           )?.nombre ||
           `Recurso ${b.id_recurso}`,
         fecha: b.fecha,
+        fecha_fin: b.fecha_fin,
         hora_inicio:
           b.hora_inicio,
         hora_fin:
@@ -758,12 +759,10 @@ export async function obtenerReporteCompleto(
               minutosDisponibles +=
                 Math.max(
                   0,
-                  horaAMinutos(
+                  calcularDuracionEnMinutos(
+                    horario.hora_apertura,
                     horario.hora_cierre
-                  ) -
-                    horaAMinutos(
-                      horario.hora_apertura
-                    )
+                  )
                 );
             }
           }
@@ -797,12 +796,10 @@ export async function obtenerReporteCompleto(
                     total +
                     Math.max(
                       0,
-                      horaAMinutos(
+                      calcularDuracionEnMinutos(
+                        r.hora_inicio,
                         r.hora_fin
-                      ) -
-                        horaAMinutos(
-                          r.hora_inicio
-                        )
+                      )
                     )
                   );
                 }

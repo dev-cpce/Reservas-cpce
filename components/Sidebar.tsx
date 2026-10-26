@@ -13,10 +13,12 @@ import {
     NoSymbolIcon,
     ChartBarIcon,
     ArrowRightOnRectangleIcon,
-    ShieldCheckIcon
+    ShieldCheckIcon,
+    ChatBubbleLeftRightIcon
 } from '@heroicons/react/24/outline';
 import { obtenerPermisosReportes } from '@/app/api/reportes/permissions';
 import { obtenerEsAdminMonitoreo } from '@/app/api/admin/monitoreo/actions';
+import { obtenerPermisosMensajes } from '@/app/api/mensajes/actions';
 
 const navigation = [
     { name: 'Inicio', href: '/dashboard', icon: HomeIcon },
@@ -25,6 +27,7 @@ const navigation = [
     { name: 'Reservas', href: '/reservas', icon: CalendarDaysIcon },
     { name: 'Clientes', href: '/clientes', icon: UserGroupIcon },
     { name: 'Pagos', href: '/pagos', icon: CreditCardIcon },
+    { name: 'Mensajes', href: '/mensajes', icon: ChatBubbleLeftRightIcon },
     { name: 'Reportes', href: '/reportes', icon: ChartBarIcon },
     { name: 'Monitoreo', href: '/admin', icon: ShieldCheckIcon }
 ];
@@ -35,6 +38,8 @@ export default function Sidebar() {
     const [puedeVerReportes, setPuedeVerReportes] = useState(false);
 
     const [puedeVerAdmin, setPuedeVerAdmin] = useState(false);
+
+    const [puedeVerMensajes, setPuedeVerMensajes] = useState(false);
 
     useEffect(() => {
         let activo = true;
@@ -63,6 +68,18 @@ export default function Sidebar() {
                     setPuedeVerAdmin(false);
                 }
             }
+
+            try {
+                const permisosMensajes = await obtenerPermisosMensajes();
+
+                if (activo) {
+                    setPuedeVerMensajes(permisosMensajes.puedeVer);
+                }
+            } catch {
+                if (activo) {
+                    setPuedeVerMensajes(false);
+                }
+            }
         };
 
         cargarPermisos();
@@ -79,6 +96,10 @@ export default function Sidebar() {
 
         if (item.href === '/admin') {
             return puedeVerAdmin;
+        }
+
+        if (item.href === '/mensajes') {
+            return puedeVerMensajes;
         }
 
         return true;

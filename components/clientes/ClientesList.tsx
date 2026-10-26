@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Cliente } from '@/types';
 import {
   PencilIcon,
@@ -53,28 +53,20 @@ export default function ClientesList({
     });
   };
 
-  /*
-   * Buscar automáticamente mientras el usuario escribe.
-   *
-   * Se utiliza un pequeño debounce para no enviar una consulta
-   * a Supabase por cada tecla inmediatamente.
-   */
-useEffect(() => {
-  const termino = searchQuery.trim();
+  // La búsqueda solo se ejecuta al presionar Enter o el botón "Buscar",
+  // no automáticamente mientras el usuario escribe.
+  const handleSearchSubmit = () => {
+    const termino = searchQuery.trim();
 
-  if (termino === '') {
-    return;
-  }
-
-  const timeout = setTimeout(() => {
-    setIsSearching(true);
+    setIsSearching(termino !== '');
     onSearch(termino);
-  }, 300);
-
-  return () => {
-    clearTimeout(timeout);
   };
-}, [searchQuery, onSearch]);
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      handleSearchSubmit();
+    }
+  };
 
   const handleClearSearch = () => {
     setSearchQuery('');
@@ -135,9 +127,10 @@ useEffect(() => {
           <input
             type="text"
             className="w-full p-3 pl-10 pr-10 border border-gray-300 rounded-l focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="Buscar por nombre, apellido o teléfono..."
+            placeholder="Buscar por matrícula, nombre, apellido o teléfono y presioná Enter..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
           />
 
           <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-500">
@@ -158,7 +151,7 @@ useEffect(() => {
 
         <button
           type="button"
-          onClick={() => onSearch(searchQuery.trim())}
+          onClick={handleSearchSubmit}
           className="px-4 py-2 bg-blue-600 text-white border-r border-blue-700 hover:bg-blue-700"
         >
           Buscar
@@ -245,6 +238,20 @@ useEffect(() => {
                   scope="col"
                   className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
                 >
+                  Matrícula
+                </th>
+
+                <th
+                  scope="col"
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                >
+                  Letra
+                </th>
+
+                <th
+                  scope="col"
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                >
                   Registro
                 </th>
 
@@ -277,6 +284,14 @@ useEffect(() => {
 
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     {cliente.telefono}
+                  </td>
+
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    {cliente.nro_matricula || '-'}
+                  </td>
+
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    {cliente.letra || '-'}
                   </td>
 
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">

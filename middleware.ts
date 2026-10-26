@@ -11,7 +11,10 @@ export async function middleware(req: NextRequest) {
 
     const pathname = req.nextUrl.pathname
 
-    const isPublicRoute = pathname === '/login' || pathname.startsWith('/api/auth') ||   pathname.startsWith('/api/whatsapp') || pathname.includes('favicon.ico')
+    // El planificador no tiene sesión: la ruta valida por sí misma el Bearer CRON_SECRET.
+    const isCronAutoCancel = pathname === '/api/reservas/auto-cancelar' && !!req.headers.get('authorization')
+
+    const isPublicRoute = pathname === '/login' || pathname.startsWith('/api/auth') ||   pathname.startsWith('/api/whatsapp') || pathname.includes('favicon.ico') || isCronAutoCancel
 
 
     if (!session && !isPublicRoute) {
@@ -25,7 +28,7 @@ export async function middleware(req: NextRequest) {
   } catch {
     // Ante un error al validar la sesión no se deja pasar la solicitud a rutas privadas.
     const pathnameError = req.nextUrl.pathname
-    const esPublica = pathnameError === '/login' || pathnameError.startsWith('/api/auth') || pathnameError.startsWith('/api/whatsapp') || pathnameError.includes('favicon.ico')
+    const esPublica = pathnameError === '/login' || pathnameError.startsWith('/api/auth') || pathnameError.startsWith('/api/whatsapp') || pathnameError.includes('favicon.ico') || (pathnameError === '/api/reservas/auto-cancelar' && !!req.headers.get('authorization'))
 
     if (!esPublica) {
       return NextResponse.redirect(new URL('/login', req.url))

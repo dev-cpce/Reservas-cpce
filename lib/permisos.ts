@@ -24,7 +24,10 @@ export type Permiso =
   | 'bloqueos.editar'
   | 'bloqueos.eliminar'
   | 'reportes.ver'
-  | 'reportes.exportar';
+  | 'reportes.exportar'
+
+  | 'mensajes.ver'
+  | 'mensajes.enviar';
 
 const PERMISOS_ADMIN: readonly Permiso[] = [
   'dashboard.ver',
@@ -57,6 +60,9 @@ const PERMISOS_ADMIN: readonly Permiso[] = [
 
   'reportes.ver',
   'reportes.exportar',
+
+  'mensajes.ver',
+  'mensajes.enviar',
 ];
 
 const PERMISOS_GERENCIA: readonly Permiso[] = [
@@ -79,6 +85,9 @@ const PERMISOS_EMPLEADO: readonly Permiso[] = [
   'recursos.ver',
 
   'bloqueos.ver',
+
+  'mensajes.ver',
+  'mensajes.enviar',
 ];
 
 const PERMISOS_POR_ROL: Record<Rol, readonly Permiso[]> = {

@@ -21,6 +21,7 @@ interface ReservasListProps {
   onCambiarEstado: (id: number, estado: string) => void;
   puedeEliminar: boolean;
   puedeCancelar: boolean;
+  puedeReasignar?: boolean;
 }
 
 export const ReservasList = ({
@@ -29,7 +30,8 @@ export const ReservasList = ({
   onDelete,
   onCambiarEstado,
   puedeEliminar,
-  puedeCancelar
+  puedeCancelar,
+  puedeReasignar = false
 }: ReservasListProps) => {
   const [reservaSeleccionada, setReservaSeleccionada] = useState<Reserva | null>(null);
   const [modalAbierto, setModalAbierto] = useState(false);
@@ -208,8 +210,12 @@ export const ReservasList = ({
       <EyeIcon className="h-5 w-5" />
     </button>
 
-    {/* Editar - solo reservas pendientes */}
-    {reserva.estado_reserva === 'pendiente' && (
+    {/* Editar - pendientes; confirmadas/canceladas con pago solo ADMIN/GERENCIA */}
+    {(reserva.estado_reserva === 'pendiente' ||
+      (puedeReasignar &&
+        reserva.tiene_pago_aprobado &&
+        (reserva.estado_reserva === 'confirmada' ||
+          reserva.estado_reserva === 'cancelada'))) && (
       <button
         onClick={() => onEdit(reserva)}
         className="text-blue-600 hover:text-blue-900"
@@ -218,6 +224,23 @@ export const ReservasList = ({
         <PencilIcon className="h-5 w-5" />
       </button>
     )}
+
+    {/* Aprobar reserva cancelada con pago previo (pago tardío) */}
+    {puedeReasignar &&
+      reserva.estado_reserva === 'cancelada' &&
+      reserva.tiene_pago_aprobado && (
+        <button
+          onClick={() => {
+            if (window.confirm('¿Aprobar esta reserva cancelada con pago previo?')) {
+              onCambiarEstado(reserva.id_reserva, 'confirmada');
+            }
+          }}
+          className="text-green-600 hover:text-green-900"
+          title="Aprobar reserva (pago tardío)"
+        >
+          <CheckCircleIcon className="h-5 w-5" />
+        </button>
+      )}
 
     {/* Cancelar - solo GERENCIA/ADMIN y reservas pendientes */}
     {reserva.estado_reserva === 'pendiente' &&

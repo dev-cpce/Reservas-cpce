@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { ApiResponse } from '@/types/api';
 import { logSystemEvent } from '@/lib/logger';
 import { validarApiKeyN8n } from '@/lib/auth/apiKeyN8n';
+import { calcularHoraFinPorDuracion } from '@/lib/recursoDisponibilidad';
 
 function getSupabaseClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -37,6 +38,9 @@ interface ActualizarReservaExternalRequest {
   estado_reserva: 'pendiente' | 'confirmada' | 'cancelada';
 }
 
+// Valida el formato HH:MM; el cálculo del fin (incluyendo el cruce de medianoche hacia
+// "00:00"/"01:00" del día siguiente) se delega en `calcularHoraFinPorDuracion`, compartida
+// con el resto de la app para no duplicar la regla de negocio.
 function calcularHoraFin(
   horaInicio: string,
   duracionMinutos: number
@@ -59,18 +63,7 @@ function calcularHoraFin(
     return null;
   }
 
-  const totalMinutos = horas * 60 + minutos + duracionMinutos;
-
-  if (totalMinutos >= 24 * 60) {
-    return null;
-  }
-
-  const horaFin = Math.floor(totalMinutos / 60);
-  const minutoFin = totalMinutos % 60;
-
-  return `${horaFin.toString().padStart(2, '0')}:${minutoFin
-    .toString()
-    .padStart(2, '0')}`;
+  return calcularHoraFinPorDuracion(horaInicio, duracionMinutos);
 }
 
 export async function GET(request: NextRequest) {

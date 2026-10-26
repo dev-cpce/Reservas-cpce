@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { ApiResponse } from '@/types/api';
+import {
+  esDuracionValida,
+  calcularHoraFinPorDuracion,
+  haySolapamientoDeHorarios,
+  reservaBloqueaRecurso,
+  horaAMinutos,
+  puntoRelativoA
+} from '@/lib/recursoDisponibilidad';
 
 function getSupabaseClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -17,14 +25,6 @@ function validateApiKey(request: NextRequest): boolean {
   const apiKey = request.headers.get('x-api-key');
   return apiKey === process.env.N8N_API_KEY;
 }
-
-type Reserva = {
-  id_reserva: number;
-  hora_inicio: string;
-  hora_fin: string;
-  estado_reserva: string;
-  fecha_expiracion_pago: string | null;
-};
 
 type HorarioOcupado = {
   hora_inicio: string;
@@ -55,56 +55,17 @@ function normalizarHora(hora: string): string {
   return hora.slice(0, 5);
 }
 
-function minutosDesdeMedianoche(hora: string): number {
-  const [horas, minutos] = normalizarHora(hora)
-    .split(':')
-    .map(Number);
-
-  return horas * 60 + minutos;
-}
-
+// Formateo de minutos a "HH:MM" para los slots de la grilla; el mod evita valores
+// como "24:30" cuando `minutos` ya incluye el cruce de medianoche (p. ej. un cierre
+// a la 01:00 representado como 1500).
 function horaDesdeMinutos(minutos: number): string {
-  const horas = Math.floor(minutos / 60);
-  const minutosRestantes = minutos % 60;
+  const minutosDelDia = minutos % (24 * 60);
+  const horas = Math.floor(minutosDelDia / 60);
+  const minutosRestantes = minutosDelDia % 60;
 
   return `${horas.toString().padStart(2, '0')}:${minutosRestantes
     .toString()
     .padStart(2, '0')}`;
-}
-
-function calcularHoraFin(
-  horaInicio: string,
-  duracionMinutos: number
-): string {
-  const inicio = minutosDesdeMedianoche(horaInicio);
-
-  return horaDesdeMinutos(
-    inicio + duracionMinutos
-  );
-}
-
-function haySolapamiento(
-  inicioA: string,
-  finA: string,
-  inicioB: string,
-  finB: string
-): boolean {
-  const inicioAMin =
-    minutosDesdeMedianoche(inicioA);
-
-  const finAMin =
-    minutosDesdeMedianoche(finA);
-
-  const inicioBMin =
-    minutosDesdeMedianoche(inicioB);
-
-  const finBMin =
-    minutosDesdeMedianoche(finB);
-
-  return (
-    inicioAMin < finBMin &&
-    finAMin > inicioBMin
-  );
 }
 
 function obtenerDiaSemana(fecha: string): number {
@@ -155,51 +116,6 @@ function obtenerFechaHoraArgentina(): {
   };
 }
 
-function validarDuracion(
-  duracionMinutos: number
-): boolean {
-  return (
-    duracionMinutos === 90 ||
-    duracionMinutos === 120
-  );
-}
-
-function reservaBloqueaRecurso(
-  reserva: Reserva,
-  ahora: Date
-): boolean {
-
-  if (
-    reserva.estado_reserva ===
-    'confirmada'
-  ) {
-    return true;
-  }
-
-  if (
-    reserva.estado_reserva !==
-    'pendiente'
-  ) {
-    return false;
-  }
-
-  /*
-   * Las reservas pendientes sin expiración
-   * se consideran bloqueantes por compatibilidad.
-   */
-  if (
-    !reserva.fecha_expiracion_pago
-  ) {
-    return true;
-  }
-
-  return (
-    new Date(
-      reserva.fecha_expiracion_pago
-    ) > ahora
-  );
-}
-
 async function obtenerDisponibilidadRecursos(
   fecha: string,
   idRecurso?: number,
@@ -216,7 +132,7 @@ async function obtenerDisponibilidadRecursos(
 
   if (
     duracionMinutos !== undefined &&
-    !validarDuracion(
+    !esDuracionValida(
       duracionMinutos
     )
   ) {
@@ -434,8 +350,12 @@ async function obtenerDisponibilidadRecursos(
         'id_recurso',
         recurso.id_recurso
       )
-      .eq(
+      .lte(
         'fecha',
+        fecha
+      )
+      .gte(
+        'fecha_fin',
         fecha
       )
       .eq(
@@ -534,12 +454,13 @@ async function obtenerDisponibilidadRecursos(
     ) {
 
       const apertura =
-        minutosDesdeMedianoche(
+        horaAMinutos(
           horario.hora_apertura
         );
 
       const cierre =
-        minutosDesdeMedianoche(
+        puntoRelativoA(
+          horario.hora_apertura,
           horario.hora_cierre
         );
 
@@ -563,15 +484,18 @@ async function obtenerDisponibilidadRecursos(
 
         /*
          * Si es hoy, no mostrar horarios
-         * que ya comenzaron.
+         * que ya comenzaron. `horaSlot` se ancla a la
+         * apertura porque puede representar "00:00"/"00:30"
+         * del día siguiente (cierre nocturno).
          */
 
         if (
           esHoy &&
-          minutosDesdeMedianoche(
+          puntoRelativoA(
+            horario.hora_apertura,
             horaSlot
           ) <=
-            minutosDesdeMedianoche(
+            horaAMinutos(
               horaActualArgentina
             )
         ) {
@@ -588,14 +512,15 @@ async function obtenerDisponibilidadRecursos(
           inicio + 120 <= cierre &&
           !horariosOcupados.some(
             (ocupado) =>
-              haySolapamiento(
+              haySolapamientoDeHorarios(
                 horaSlot,
-                calcularHoraFin(
+                calcularHoraFinPorDuracion(
                   horaSlot,
                   120
                 ),
                 ocupado.hora_inicio,
-                ocupado.hora_fin
+                ocupado.hora_fin,
+                horario.hora_apertura
               )
           );
 
@@ -608,14 +533,15 @@ async function obtenerDisponibilidadRecursos(
         const puede90 =
           !horariosOcupados.some(
             (ocupado) =>
-              haySolapamiento(
+              haySolapamientoDeHorarios(
                 horaSlot,
-                calcularHoraFin(
+                calcularHoraFinPorDuracion(
                   horaSlot,
                   90
                 ),
                 ocupado.hora_inicio,
-                ocupado.hora_fin
+                ocupado.hora_fin,
+                horario.hora_apertura
               )
           );
 
@@ -932,7 +858,7 @@ export async function GET(
     if (
       duracionMinutos !==
         undefined &&
-      !validarDuracion(
+      !esDuracionValida(
         duracionMinutos
       )
     ) {
@@ -1135,7 +1061,7 @@ export async function POST(
     if (
       duracionMinutos !==
         undefined &&
-      !validarDuracion(
+      !esDuracionValida(
         duracionMinutos
       )
     ) {

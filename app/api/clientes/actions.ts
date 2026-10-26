@@ -70,7 +70,10 @@ export async function crearCliente(
 
   const clienteConFecha = {
     ...cliente,
-    fecha_registro: new Date().toISOString()
+    fecha_registro: new Date().toISOString(),
+    // El chat_id se utiliza para identificar al cliente en WhatsApp,
+    // por defecto se asigna el mismo número de teléfono.
+    chat_id: cliente.telefono
   };
 
   const { data, error } = await supabase
@@ -138,10 +141,12 @@ export async function eliminarCliente(id: number) {
 }
 
 /**
- * Busca clientes por nombre, apellido o teléfono.
+ * Busca clientes por nombre, apellido, teléfono o número de matrícula.
  *
- * La búsqueda se realiza mediante una función PostgreSQL
- * que utiliza unaccent para ignorar diferencias de tildes.
+ * La búsqueda por nombre/apellido/teléfono se realiza mediante una
+ * función PostgreSQL que utiliza unaccent para ignorar diferencias de
+ * tildes. Adicionalmente se busca por número de matrícula directamente
+ * en la tabla, combinando ambos resultados sin duplicados.
  */
 export async function buscarClientes(query: string) {
   const permitido = await tienePermisoUsuario('clientes.ver');
@@ -173,7 +178,27 @@ export async function buscarClientes(query: string) {
     );
   }
 
-  return data || [];
+  const { data: porMatricula, error: errorMatricula } = await supabase
+    .from('cliente')
+    .select('*')
+    .ilike('nro_matricula', `%${termino}%`);
+
+  if (errorMatricula) {
+    console.error(
+      'Error al buscar clientes por matrícula:',
+      errorMatricula
+    );
+  }
+
+  const resultados = [...(data || []), ...(porMatricula || [])];
+
+  const resultadosUnicos = Array.from(
+    new Map(
+      resultados.map((cliente) => [cliente.id_cliente, cliente])
+    ).values()
+  );
+
+  return resultadosUnicos;
 }
 
 /**

@@ -46,6 +46,7 @@ export interface RecursoBloqueo {
     id_bloqueo: number;
     id_recurso: number;
     fecha: string;
+    fecha_fin: string;
     hora_inicio: string;
     hora_fin: string;
     motivo: string | null;
@@ -63,6 +64,9 @@ export interface Cliente {
     created_at?: string;
     // Nuevo (Paso 2): distingue socio / no socio para el cálculo de tarifas.
     tipo_cliente?: 'SOCIO' | 'NO_SOCIO';
+    // Nuevo: número de matrícula y letra del socio (CPCE).
+    nro_matricula?: string | null;
+    letra?: string | null;
 }
 
 export interface Reserva {
@@ -79,6 +83,7 @@ export interface Reserva {
     recurso?: Recurso;
     duracion_minutos?: number | null;
     fecha_expiracion_pago?: string | null;
+    tiene_pago_aprobado?: boolean;
 
     costo_total?: number;
     observaciones?: string;

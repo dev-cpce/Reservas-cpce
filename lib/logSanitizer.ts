@@ -18,6 +18,7 @@ function secretosDelEntorno(): string[] {
     process.env.N8N_API_KEY,
     process.env.SUPABASE_SERVICE_ROLE_KEY,
     process.env.WHATSAPP_VERIFY_TOKEN,
+    process.env.WHATSAPP_TOKEN,
   ].filter((s): s is string => typeof s === 'string' && s.length >= 8);
 }
 

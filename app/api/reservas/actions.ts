@@ -11,8 +11,12 @@ import {
   esDuracionValida,
   calcularHoraFinPorDuracion,
   haySolapamientoDeHorarios,
+  haySolapamientoEntreFechas,
+  expandirRangoBloqueo,
+  sumarDiasAFecha,
   reservaBloqueaRecurso,
-  horaAMinutos
+  horaAMinutos,
+  puntoRelativoA
 } from '@/lib/recursoDisponibilidad';
 import { tienePermisoUsuario } from '@/lib/auth/tienePermisoUsuario';
 import { obtenerPerfil } from '@/lib/auth/obtenerPerfil';
@@ -80,6 +84,30 @@ const verificarConectividad = async (supabase: ReturnType<typeof createServerCom
   }
 };
 
+// Reasignar reservas ya confirmadas/canceladas con pago solo lo pueden hacer ADMIN y GERENCIA.
+async function puedeReasignarReservas(): Promise<boolean> {
+  const perfil = await obtenerPerfil();
+  return perfil?.rol === 'ADMIN' || perfil?.rol === 'GERENCIA';
+}
+
+async function reservaTienePagoAprobado(
+  supabase: ReturnType<typeof createServerComponentClient>,
+  idReserva: number
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('pago')
+    .select('id_pago')
+    .eq('id_reserva', idReserva)
+    .eq('estado_pago', 'aprobado')
+    .limit(1);
+
+  if (error) {
+    throw new Error(`Error al verificar el pago de la reserva: ${error.message}`);
+  }
+
+  return (data?.length ?? 0) > 0;
+}
+
 // Obtener todas las reservas
 export async function obtenerReservas() {
   try {
@@ -100,8 +128,20 @@ export async function obtenerReservas() {
     const filas = reservas || [];
     const { clientes, recursos } = await cargarRelacionesReservas(supabase, filas);
 
+    const idsConPago = new Set<number>();
+    const idsReservas = filas.map(r => r.id_reserva);
+    if (idsReservas.length > 0) {
+      const { data: pagos } = await supabase
+        .from('pago')
+        .select('id_reserva')
+        .eq('estado_pago', 'aprobado')
+        .in('id_reserva', idsReservas);
+      (pagos ?? []).forEach(p => idsConPago.add(p.id_reserva));
+    }
+
     return filas.map(reserva => ({
       ...reserva,
+      tiene_pago_aprobado: idsConPago.has(reserva.id_reserva),
       cliente: clientes.get(reserva.id_cliente) || null,
       recurso: recursos.get(reserva.id_recurso) || null
     }));
@@ -204,6 +244,24 @@ if (!reservaAntes) {
 }
 
   estadoAnterior = reservaAntes.estado_reserva;
+
+  // Aprobar una reserva cancelada (pago tardío): solo ADMIN/GERENCIA, con pago
+  // aprobado y revalidando que el horario siga libre.
+  if (estado === 'confirmada' && estadoAnterior === 'cancelada') {
+    if (!(await puedeReasignarReservas())) {
+      throw new Error('Solo ADMIN o GERENCIA pueden aprobar una reserva cancelada.');
+    }
+    if (!(await reservaTienePagoAprobado(supabase, id))) {
+      throw new Error('La reserva cancelada no tiene un pago aprobado asociado.');
+    }
+    await verificarDisponibilidadRecurso(
+      reservaAntes.fecha_reserva,
+      reservaAntes.hora_inicio,
+      reservaAntes.hora_fin,
+      reservaAntes.id_recurso,
+      id
+    );
+  }
 
   const { data: filasActualizadas, error } = await supabase
     .from('reserva')
@@ -333,8 +391,15 @@ export async function obtenerReservasPorDiaSemana() {
   }
 }
 
+// Plazo (minutos) solo para reservas legacy sin fecha_expiracion_pago.
+// El plazo real de las reservas nuevas lo fija crear_reserva_recurso en la base.
+function minutosPlazoLegacy(): number {
+  const valor = Number(process.env.AUTOCANCEL_MINUTOS);
+  return Number.isFinite(valor) && valor > 0 ? Math.floor(valor) : 5;
+}
+
 // Función para obtener reservas pendientes que exceden el tiempo límite
-export async function obtenerReservasPendientesVencidas(tiempoLimiteMinutos = 5) {
+export async function obtenerReservasPendientesVencidas(tiempoLimiteMinutos = minutosPlazoLegacy()) {
   // Usar Service Role Key para procesos automáticos (no cookies de usuario)
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -348,15 +413,18 @@ export async function obtenerReservasPendientesVencidas(tiempoLimiteMinutos = 5)
   try {
     // No necesitamos verificar conectividad de usuario para procesos automáticos
     
-    // Calcular el timestamp límite (5 minutos atrás)
-    const tiempoLimite = new Date();
-    tiempoLimite.setMinutes(tiempoLimite.getMinutes() - tiempoLimiteMinutos);
+    // Calcular el timestamp límite solo para reservas legacy sin fecha_expiracion_pago
+    const ahora = new Date();
+    const tiempoLimite = new Date(ahora.getTime() - tiempoLimiteMinutos * 60 * 1000);
     
+    // Se respeta fecha_expiracion_pago (la misma que usa la disponibilidad); created_at es solo respaldo.
     const { data, error } = await supabase
       .from('reserva')
       .select('id_reserva, fecha_reserva, hora_inicio, created_at, estado_reserva')
       .eq('estado_reserva', 'pendiente')
-      .lt('created_at', tiempoLimite.toISOString());
+      .or(
+        `fecha_expiracion_pago.lt.${ahora.toISOString()},and(fecha_expiracion_pago.is.null,created_at.lt.${tiempoLimite.toISOString()})`
+      );
     
     if (error) {
       await logSystemEvent({
@@ -446,7 +514,8 @@ export async function cancelarReservasPendientesVencidas() {
     
     // Camino atómico: una RPC bloquea, revalida pagos y cancela en la base de datos.
     const { data: canceladasRpc, error: rpcError } = await supabase.rpc(
-      'cancelar_reservas_pendientes_vencidas'
+      'cancelar_reservas_pendientes_vencidas',
+      { p_minutos_legacy: minutosPlazoLegacy() }
     );
 
     if (!rpcError) {
@@ -653,7 +722,8 @@ export async function obtenerBloqueosActivosRecurso(fecha: string, idRecurso: nu
       .from('recurso_bloqueo')
       .select('hora_inicio, hora_fin')
       .eq('id_recurso', idRecurso)
-      .eq('fecha', fecha)
+      .lte('fecha', fecha)
+      .gte('fecha_fin', fecha)
       .eq('activo', true);
 
     if (error) {
@@ -721,8 +791,12 @@ async function obtenerTipoClienteParaTarifa(idCliente: number): Promise<'SOCIO' 
   return data.tipo_cliente === 'SOCIO' ? 'SOCIO' : 'NO_SOCIO';
 }
 
+
 // Verifica disponibilidad por recurso mediante solapamiento de intervalos (no
 // igualdad de hora_inicio) e ignora reservas PENDIENTE cuyo pago ya venció.
+// Consulta también el día anterior y el siguiente: una reserva/bloqueo nocturno
+// (que cierra a las 00:00/01:00 del día siguiente) puede ocupar minutos de esas
+// fechas vecinas, no solo de `fecha`.
 async function verificarDisponibilidadRecurso(
   fecha: string,
   horaInicio: string,
@@ -731,44 +805,69 @@ async function verificarDisponibilidadRecurso(
   idReservaExcluir?: number
 ) {
   const supabase = createServerComponentClient({ cookies });
+  const fechaAnterior = sumarDiasAFecha(fecha, -1);
+  const fechaSiguiente = sumarDiasAFecha(fecha, 1);
 
   let query = supabase
     .from('reserva')
-    .select('id_reserva, hora_inicio, hora_fin, estado_reserva, fecha_expiracion_pago')
+    .select('id_reserva, fecha_reserva, hora_inicio, hora_fin, estado_reserva, fecha_expiracion_pago')
     .eq('id_recurso', idRecurso)
-    .eq('fecha_reserva', fecha)
+    .gte('fecha_reserva', fechaAnterior)
+    .lte('fecha_reserva', fechaSiguiente)
     .neq('estado_reserva', 'cancelada');
 
   if (idReservaExcluir) {
     query = query.neq('id_reserva', idReservaExcluir);
   }
 
-  const { data: reservasDelDia, error } = await query;
+  const { data: reservasCercanas, error } = await query;
 
   if (error) {
     throw new Error(`Error al verificar disponibilidad del recurso: ${error.message}`);
   }
 
   const ahora = new Date();
-  const conflictos = (reservasDelDia || [])
+  const candidato = { fecha, hora_inicio: horaInicio, hora_fin: horaFin };
+  const conflictos = (reservasCercanas || [])
     .filter(reserva => reservaBloqueaRecurso(reserva, ahora))
-    .filter(reserva => haySolapamientoDeHorarios(horaInicio, horaFin, reserva.hora_inicio, reserva.hora_fin));
+    .filter(reserva => haySolapamientoEntreFechas(candidato, {
+      fecha: reserva.fecha_reserva,
+      hora_inicio: reserva.hora_inicio,
+      hora_fin: reserva.hora_fin
+    }));
 
   if (conflictos.length > 0) {
     const detalle = conflictos
-      .map(c => `${c.hora_inicio.substring(0, 5)}-${c.hora_fin.substring(0, 5)}`)
+      .map(c => `${c.fecha_reserva} ${c.hora_inicio.substring(0, 5)}-${c.hora_fin.substring(0, 5)}`)
       .join(', ');
     throw new Error(`El recurso ya tiene una reserva que se solapa con ese horario (${detalle}).`);
   }
 
-  const bloqueos = await obtenerBloqueosActivosRecurso(fecha, idRecurso);
-  const bloqueosEnConflicto = bloqueos.filter(bloqueo =>
-    haySolapamientoDeHorarios(horaInicio, horaFin, bloqueo.hora_inicio, bloqueo.hora_fin)
+  const { data: bloqueosCercanos, error: errorBloqueos } = await supabase
+    .from('recurso_bloqueo')
+    .select('fecha, fecha_fin, hora_inicio, hora_fin')
+    .eq('id_recurso', idRecurso)
+    .eq('activo', true)
+    .lte('fecha', fechaSiguiente)
+    .gte('fecha_fin', fechaAnterior);
+
+  if (errorBloqueos) {
+    throw new Error(`Error al verificar bloqueos del recurso: ${errorBloqueos.message}`);
+  }
+
+  // Cada bloqueo puede abarcar varios días; se expande a una entrada por día dentro
+  // de la ventana [fechaAnterior, fechaSiguiente] para comparar contra el candidato.
+  const bloqueosExpandidos = (bloqueosCercanos || []).flatMap(b =>
+    expandirRangoBloqueo(b, fechaAnterior, fechaSiguiente)
+  );
+
+  const bloqueosEnConflicto = bloqueosExpandidos.filter(bloqueo =>
+    haySolapamientoEntreFechas(candidato, bloqueo)
   );
 
   if (bloqueosEnConflicto.length > 0) {
     const detalle = bloqueosEnConflicto
-      .map(b => `${b.hora_inicio.substring(0, 5)}-${b.hora_fin.substring(0, 5)}`)
+      .map(b => `${b.fecha} ${b.hora_inicio.substring(0, 5)}-${b.hora_fin.substring(0, 5)}`)
       .join(', ');
     throw new Error(`El recurso tiene un bloqueo que se solapa con ese horario (${detalle}).`);
   }
@@ -929,10 +1028,37 @@ export async function actualizarReservaRecurso(
 
   const horaFin = calcularHoraFinPorDuracion(datos.hora_inicio, datos.duracion_minutos);
 
+  const { data: reservaActual, error: errorActual } = await supabase
+    .from('reserva')
+    .select('estado_reserva')
+    .eq('id_reserva', id)
+    .maybeSingle();
+
+  if (errorActual || !reservaActual) {
+    throw new Error('La reserva no existe.');
+  }
+
+  // Confirmadas/canceladas solo se reasignan (ADMIN/GERENCIA) si tienen pago aprobado;
+  // se conserva el costo ya abonado.
+  const esReasignacion = ['confirmada', 'cancelada'].includes(reservaActual.estado_reserva);
+
+  if (esReasignacion) {
+    if (!(await puedeReasignarReservas())) {
+      throw new Error('Solo ADMIN o GERENCIA pueden editar reservas confirmadas o canceladas.');
+    }
+    if (!(await reservaTienePagoAprobado(supabase, id))) {
+      throw new Error('Solo se pueden editar reservas confirmadas o canceladas con un pago aprobado asociado.');
+    }
+  }
+
   await verificarDisponibilidadRecurso(datos.fecha_reserva, datos.hora_inicio, horaFin, datos.id_recurso, id);
 
   const tipoCliente = await obtenerTipoClienteParaTarifa(datos.id_cliente);
   const costoReserva = await calcularCostoReservaPorRecurso(datos.id_recurso, tipoCliente, datos.duracion_minutos);
+
+  // Reasignar una reserva cancelada con pago aprobado la confirma de una: ya
+  // tiene el pago y el nuevo horario quedó validado como libre arriba.
+  const estadoNuevo = esReasignacion ? 'confirmada' : undefined;
 
   const { error } = await supabase
     .from('reserva')
@@ -943,7 +1069,8 @@ export async function actualizarReservaRecurso(
       hora_inicio: datos.hora_inicio,
       hora_fin: horaFin,
       duracion_minutos: datos.duracion_minutos,
-      costo_reserva: costoReserva
+      ...(esReasignacion ? {} : { costo_reserva: costoReserva }),
+      ...(estadoNuevo ? { estado_reserva: estadoNuevo } : {})
     })
     .eq('id_reserva', id);
 
@@ -954,8 +1081,10 @@ export async function actualizarReservaRecurso(
   await logSystemEvent({
     level: 'info',
     source: 'reservas',
-    event: 'RESERVA_UPDATED',
-    message: 'Reserva actualizada correctamente',
+    event: estadoNuevo ? 'RESERVA_REASIGNADA' : 'RESERVA_UPDATED',
+    message: estadoNuevo
+      ? `Reserva reasignada y confirmada (estado anterior: ${reservaActual.estado_reserva})`
+      : 'Reserva actualizada correctamente',
     requestId,
     userId,
     metadata: {
@@ -968,6 +1097,8 @@ export async function actualizarReservaRecurso(
       hora_fin: horaFin,
       duracion_minutos: datos.duracion_minutos,
       costo_reserva: costoReserva,
+      estado_anterior: reservaActual.estado_reserva,
+      estado_nuevo: estadoNuevo ?? reservaActual.estado_reserva,
     },
   });
 
@@ -1075,21 +1206,27 @@ export async function eliminarReservaRecurso(id: number) {
 export async function obtenerPermisosReservas() {
   const puedeEliminar = await tienePermisoUsuario('reservas.eliminar');
   const puedeCancelar = await tienePermisoUsuario('reservas.cancelar');
+  const puedeReasignar = await puedeReasignarReservas();
 
   return {
     puedeEliminar,
     puedeCancelar,
+    puedeReasignar,
   };
 }
 
+// Genera slots de 30 min entre apertura y cierre. El cierre se ancla a la apertura (no a la
+// medianoche) para soportar horarios que cruzan el día ("00:00"/"01:00" del día siguiente);
+// el minuto se devuelve módulo 24h para no mostrar horas inválidas como "24:30".
 function generarSlotsDeMediaHora(horaApertura: string, horaCierre: string): string[] {
   const slots: string[] = [];
   const aperturaMin = horaAMinutos(horaApertura);
-  const cierreMin = horaAMinutos(horaCierre);
+  const cierreMin = puntoRelativoA(horaApertura, horaCierre);
 
   for (let minuto = aperturaMin; minuto + 30 <= cierreMin; minuto += 30) {
-    const hh = Math.floor(minuto / 60).toString().padStart(2, '0');
-    const mm = (minuto % 60).toString().padStart(2, '0');
+    const minutoDelDia = minuto % (24 * 60);
+    const hh = Math.floor(minutoDelDia / 60).toString().padStart(2, '0');
+    const mm = (minutoDelDia % 60).toString().padStart(2, '0');
     slots.push(`${hh}:${mm}`);
   }
 
@@ -1238,7 +1375,7 @@ export async function obtenerDisponibilidadRecursosHoy() {
     const [{ data: horarios }, { data: reservasHoy }, { data: bloqueosHoy }] = await Promise.all([
       supabase.from('recurso_horario').select('id_recurso, hora_apertura, hora_cierre').in('id_recurso', idsRecurso).eq('dia_semana', diaSemana).eq('activo', true),
       supabase.from('reserva').select('id_recurso, hora_inicio, hora_fin, estado_reserva, fecha_expiracion_pago').in('id_recurso', idsRecurso).eq('fecha_reserva', hoy).neq('estado_reserva', 'cancelada'),
-      supabase.from('recurso_bloqueo').select('id_recurso, hora_inicio, hora_fin').in('id_recurso', idsRecurso).eq('fecha', hoy).eq('activo', true)
+      supabase.from('recurso_bloqueo').select('id_recurso, hora_inicio, hora_fin').in('id_recurso', idsRecurso).lte('fecha', hoy).gte('fecha_fin', hoy).eq('activo', true)
     ]);
 
     const ahora = new Date();
@@ -1285,14 +1422,14 @@ export async function obtenerDisponibilidadRecursosHoy() {
         if (enMantenimiento) return;
 
         const finSlot = calcularHoraFinPorDuracion(slot, 30);
-        const reservaOcupante = reservasRecurso.find(r => haySolapamientoDeHorarios(slot, finSlot, r.hora_inicio, r.hora_fin));
-        const bloqueoOcupante = bloqueosRecurso.find(b => haySolapamientoDeHorarios(slot, finSlot, b.hora_inicio, b.hora_fin));
+        const reservaOcupante = reservasRecurso.find(r => haySolapamientoDeHorarios(slot, finSlot, r.hora_inicio, r.hora_fin, horario.hora_apertura));
+        const bloqueoOcupante = bloqueosRecurso.find(b => haySolapamientoDeHorarios(slot, finSlot, b.hora_inicio, b.hora_fin, horario.hora_apertura));
 
         if (reservaOcupante) {
           rangosOcupados.add(`${reservaOcupante.hora_inicio.substring(0, 5)}-${reservaOcupante.hora_fin.substring(0, 5)}`);
         } else if (bloqueoOcupante) {
           rangosOcupados.add(`${bloqueoOcupante.hora_inicio.substring(0, 5)}-${bloqueoOcupante.hora_fin.substring(0, 5)}`);
-        } else if (horaAMinutos(slot) <= minutoActual) {
+        } else if (puntoRelativoA(horario.hora_apertura, slot) <= minutoActual) {
           pasados.push(slot);
         } else {
           disponibles.push(slot);
@@ -1333,10 +1470,16 @@ export async function obtenerDisponibilidadSemanalRecurso(idRecurso: number) {
     const [{ data: horarios }, { data: reservas }, { data: bloqueos }] = await Promise.all([
       supabase.from('recurso_horario').select('dia_semana, hora_apertura, hora_cierre').eq('id_recurso', idRecurso).eq('activo', true),
       supabase.from('reserva').select('fecha_reserva, hora_inicio, hora_fin, estado_reserva, fecha_expiracion_pago').eq('id_recurso', idRecurso).gte('fecha_reserva', fechas[0]).lte('fecha_reserva', fechas[6]).neq('estado_reserva', 'cancelada'),
-      supabase.from('recurso_bloqueo').select('fecha, hora_inicio, hora_fin').eq('id_recurso', idRecurso).eq('activo', true).gte('fecha', fechas[0]).lte('fecha', fechas[6])
+      supabase.from('recurso_bloqueo').select('fecha, fecha_fin, hora_inicio, hora_fin').eq('id_recurso', idRecurso).eq('activo', true).lte('fecha', fechas[6]).gte('fecha_fin', fechas[0])
     ]);
 
     const ahora = new Date();
+
+    // Expande cada bloqueo (que puede abarcar varios días) a una entrada por día
+    // dentro de la semana consultada, para poder filtrar por `fecha === día` abajo.
+    const bloqueosExpandidos = (bloqueos || []).flatMap(b =>
+      expandirRangoBloqueo(b, fechas[0], fechas[6])
+    );
 
     return fechas.map(fecha => {
       const [year, month, day] = fecha.split('-').map(Number);
@@ -1350,7 +1493,7 @@ export async function obtenerDisponibilidadSemanalRecurso(idRecurso: number) {
       const reservasDelDia = (reservas || [])
         .filter(r => r.fecha_reserva === fecha)
         .filter(r => reservaBloqueaRecurso(r, ahora));
-      const bloqueosDelDia = (bloqueos || []).filter(b => b.fecha === fecha);
+      const bloqueosDelDia = bloqueosExpandidos.filter(b => b.fecha === fecha);
 
       const slots = generarSlotsDeMediaHora(horario.hora_apertura, horario.hora_cierre);
       const disponibles: string[] = [];
@@ -1359,8 +1502,8 @@ export async function obtenerDisponibilidadSemanalRecurso(idRecurso: number) {
       slots.forEach(slot => {
         const finSlot = calcularHoraFinPorDuracion(slot, 30);
         const ocupado =
-          reservasDelDia.some(r => haySolapamientoDeHorarios(slot, finSlot, r.hora_inicio, r.hora_fin)) ||
-          bloqueosDelDia.some(b => haySolapamientoDeHorarios(slot, finSlot, b.hora_inicio, b.hora_fin));
+          reservasDelDia.some(r => haySolapamientoDeHorarios(slot, finSlot, r.hora_inicio, r.hora_fin, horario.hora_apertura)) ||
+          bloqueosDelDia.some(b => haySolapamientoDeHorarios(slot, finSlot, b.hora_inicio, b.hora_fin, horario.hora_apertura));
 
         if (ocupado) {
           ocupados.push(slot);

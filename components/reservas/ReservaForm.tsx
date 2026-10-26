@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Reserva, Cliente, Recurso, NuevaReservaRecursoInput } from '@/types';
 import { CalendarIcon, ClockIcon, MagnifyingGlassIcon, PlusIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { obtenerReservasPorFechaYRecurso, obtenerHorarioRecurso, obtenerBloqueosActivosRecurso } from '@/app/api/reservas/actions';
@@ -8,7 +8,7 @@ import {
   crearCliente,
   buscarClientes
 } from '@/app/api/clientes/actions';
-import { DURACIONES_VALIDAS_MINUTOS, esDuracionValida, calcularHoraFinPorDuracion, haySolapamientoDeHorarios, horaAMinutos } from '@/lib/recursoDisponibilidad';
+import { DURACIONES_VALIDAS_MINUTOS, esDuracionValida, calcularHoraFinPorDuracion, haySolapamientoDeHorarios, horaAMinutos, puntoRelativoA } from '@/lib/recursoDisponibilidad';
 
 interface ReservaFormProps {
   reserva?: Reserva;
@@ -34,12 +34,15 @@ export default function ReservaForm({
   const [recursoId, setRecursoId] = useState<number>(reserva?.id_recurso || 0);
   
   const [busquedaCliente, setBusquedaCliente] = useState<string>('');
+  const [clienteSeleccionado, setClienteSeleccionado] = useState<Cliente | null>(null);
   const [clientesFiltrados, setClientesFiltrados] = useState<Cliente[]>([]);
   const [mostrarCrearCliente, setMostrarCrearCliente] = useState<boolean>(false);
   const [nuevoCliente, setNuevoCliente] = useState({
     nombre: '',
     apellido: '',
-    telefono: ''
+    telefono: '',
+    nro_matricula: '',
+    letra: ''
   });
   const [creandoCliente, setCreandoCliente] = useState<boolean>(false);
   
@@ -86,7 +89,9 @@ useEffect(() => {
       const clienteCreado = await crearCliente({
         nombre: nuevoCliente.nombre.trim(),
         apellido: nuevoCliente.apellido.trim(),
-        telefono: nuevoCliente.telefono.trim()
+        telefono: nuevoCliente.telefono.trim(),
+        nro_matricula: nuevoCliente.nro_matricula.trim() || null,
+        letra: nuevoCliente.letra.trim() || null
       });
 
       // El clienteCreado ya es el objeto cliente completo de la BD
@@ -98,11 +103,12 @@ useEffect(() => {
       // Actualizar el estado para incluir el nuevo cliente - usar solo el ID
       if (clienteCreado) {
         setClienteId(clienteCreado.id_cliente);
+        setClienteSeleccionado(clienteCreado);
       }
-      setBusquedaCliente(`${nuevoCliente.nombre} ${nuevoCliente.apellido}`);
+      setBusquedaCliente('');
       
       // Limpiar el formulario de nuevo cliente
-      setNuevoCliente({ nombre: '', apellido: '', telefono: '' });
+      setNuevoCliente({ nombre: '', apellido: '', telefono: '', nro_matricula: '', letra: '' });
       setMostrarCrearCliente(false);
       
     } catch (error) {
@@ -130,14 +136,17 @@ useEffect(() => {
   const horaFin = horaInicio ? calcularHoraFinPorDuracion(horaInicio, duracionMinutos) : '';
   
   // Genera slots de 30 min entre apertura y cierre que alcancen a completar la duración elegida.
+  // El cierre se ancla a la apertura (no a la medianoche) para soportar horarios que cruzan el
+  // día, como "00:00" o "01:00" del día siguiente.
   const generarHorarios = (horaApertura: string, horaCierre: string, duracion: number) => {
     const horarios: string[] = [];
     const aperturaMin = horaAMinutos(horaApertura);
-    const cierreMin = horaAMinutos(horaCierre);
+    const cierreMin = puntoRelativoA(horaApertura, horaCierre);
 
     for (let minuto = aperturaMin; minuto + duracion <= cierreMin; minuto += 30) {
-      const hh = Math.floor(minuto / 60).toString().padStart(2, '0');
-      const mm = (minuto % 60).toString().padStart(2, '0');
+      const minutoDelDia = minuto % (24 * 60);
+      const hh = Math.floor(minutoDelDia / 60).toString().padStart(2, '0');
+      const mm = (minutoDelDia % 60).toString().padStart(2, '0');
       horarios.push(`${hh}:${mm}`);
     }
 
@@ -146,6 +155,7 @@ useEffect(() => {
 
   const [error, setError] = useState<string>('');
   const [horariosOcupados, setHorariosOcupados] = useState<string[]>([]);
+  const [horariosBloqueados, setHorariosBloqueados] = useState<string[]>([]);
   const [horarioRecurso, setHorarioRecurso] = useState<{ hora_apertura: string; hora_cierre: string } | null>(null);
   const [cargandoHorario, setCargandoHorario] = useState<boolean>(false);
 
@@ -182,11 +192,10 @@ useEffect(() => {
             obtenerBloqueosActivosRecurso(fecha, recursoId)
           ]);
 
-          const ocupados = [
-            ...reservas.map(reserva => `${reserva.hora_inicio}-${reserva.hora_fin}`),
-            ...bloqueos.map(bloqueo => `${bloqueo.hora_inicio}-${bloqueo.hora_fin}`)
-          ];
+          const ocupados = reservas.map(reserva => `${reserva.hora_inicio}-${reserva.hora_fin}`);
+          const bloqueados = bloqueos.map(bloqueo => `${bloqueo.hora_inicio}-${bloqueo.hora_fin}`);
           setHorariosOcupados(ocupados);
+          setHorariosBloqueados(bloqueados);
         } catch {
           // Error silencioso
         }
@@ -195,6 +204,34 @@ useEffect(() => {
     
     cargarReservasExistentes();
   }, [fecha, recursoId]);
+
+  // Si cambia el recurso o la fecha, la hora elegida pertenece a otro horario (apertura/
+  // cierre distintos) y queda obsoleta: se limpia para forzar una nueva selección válida.
+  // Se omite en el primer render para no perder la hora precargada al editar una reserva.
+  const esPrimerRenderRef = useRef(true);
+  useEffect(() => {
+    if (esPrimerRenderRef.current) {
+      esPrimerRenderRef.current = false;
+      return;
+    }
+    setHoraInicio('');
+  }, [recursoId, fecha]);
+
+  // Si cambia la duración y la hora ya elegida deja de entrar en el horario disponible
+  // (p. ej. ya no alcanza a terminar antes del cierre), se limpia para evitar enviar un
+  // horario inválido u ocupado que quedó seleccionado con la duración anterior.
+  useEffect(() => {
+    if (!horaInicio || !horarioRecurso) return;
+
+    const aperturaMin = horaAMinutos(horarioRecurso.hora_apertura);
+    const cierreMin = puntoRelativoA(horarioRecurso.hora_apertura, horarioRecurso.hora_cierre);
+    const inicioRelativo = puntoRelativoA(horarioRecurso.hora_apertura, horaInicio);
+
+    if (inicioRelativo < aperturaMin || inicioRelativo + duracionMinutos > cierreMin) {
+      setHoraInicio('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [duracionMinutos]);
   
   const validarFormulario = (): boolean => {
     if (!clienteId) {
@@ -237,6 +274,33 @@ useEffect(() => {
     
     if (!esDuracionValida(duracionMinutos)) {
       setError(`Duración no válida. Valores permitidos: ${DURACIONES_VALIDAS_MINUTOS.join(' o ')} minutos.`);
+      return false;
+    }
+
+    // Validación defensiva en el cliente: aunque el servidor/RPC son la fuente de verdad,
+    // evita enviar un horario que quedó obsoleto tras un cambio de fecha/recurso/duración.
+    if (!horarioRecurso) {
+      setError('No hay horario configurado para el recurso y día seleccionados');
+      return false;
+    }
+
+    const aperturaMin = horaAMinutos(horarioRecurso.hora_apertura);
+    const cierreMin = puntoRelativoA(horarioRecurso.hora_apertura, horarioRecurso.hora_cierre);
+    const inicioRelativo = puntoRelativoA(horarioRecurso.hora_apertura, horaInicio);
+
+    if (inicioRelativo < aperturaMin || inicioRelativo + duracionMinutos > cierreMin) {
+      setError('El horario seleccionado está fuera del horario de atención del recurso');
+      return false;
+    }
+
+    const horaFinCandidata = calcularHoraFinPorDuracion(horaInicio, duracionMinutos);
+    const estaOcupado = [...horariosOcupados, ...horariosBloqueados].some(horario => {
+      const [inicioOcupado, finOcupado] = horario.split('-');
+      return haySolapamientoDeHorarios(horaInicio, horaFinCandidata, inicioOcupado, finOcupado, horarioRecurso.hora_apertura);
+    });
+
+    if (estaOcupado) {
+      setError('El horario seleccionado se solapa con una reserva o bloqueo existente');
       return false;
     }
     
@@ -299,7 +363,7 @@ useEffect(() => {
               <input
                 type="text"
                 className="pl-10 pr-10 mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50"
-                placeholder="Buscar cliente por nombre, apellido o teléfono..."
+                placeholder="Buscar cliente por matrícula, nombre, apellido o teléfono..."
                 value={busquedaCliente}
                 onChange={(e) => setBusquedaCliente(e.target.value)}
                 disabled={isSubmitting}
@@ -329,7 +393,8 @@ useEffect(() => {
                       }`}
                       onClick={() => {
                         setClienteId(cliente.id_cliente);
-                        setBusquedaCliente(`${cliente.nombre} ${cliente.apellido}`);
+                        setClienteSeleccionado(cliente);
+                        setBusquedaCliente('');
                       }}
                     >
                       <div>
@@ -338,6 +403,8 @@ useEffect(() => {
                         </div>
                         <div className="text-sm text-gray-500">
                           {cliente.telefono && `Tel: ${cliente.telefono}`}
+                          {cliente.nro_matricula &&
+                            `${cliente.telefono ? ' · ' : ''}Matrícula: ${cliente.letra ? `${cliente.letra} ` : ''}${cliente.nro_matricula}`}
                         </div>
                       </div>
                       {clienteId === cliente.id_cliente && (
@@ -364,7 +431,7 @@ useEffect(() => {
             {clienteId > 0 && !busquedaCliente && (
               <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded-md">
                 <div className="text-sm font-medium text-green-800">
-                  Cliente seleccionado: {clientes.find(c => c.id_cliente === clienteId)?.nombre} {clientes.find(c => c.id_cliente === clienteId)?.apellido}
+                  Cliente seleccionado: {(clienteSeleccionado ?? clientes.find(c => c.id_cliente === clienteId))?.nombre} {(clienteSeleccionado ?? clientes.find(c => c.id_cliente === clienteId))?.apellido}
                 </div>
               </div>
             )}
@@ -380,7 +447,7 @@ useEffect(() => {
                     type="button"
                     onClick={() => {
                       setMostrarCrearCliente(false);
-                      setNuevoCliente({ nombre: '', apellido: '', telefono: '' });
+                      setNuevoCliente({ nombre: '', apellido: '', telefono: '', nro_matricula: '', letra: '' });
                     }}
                     className="text-gray-400 hover:text-gray-600"
                   >
@@ -420,6 +487,30 @@ useEffect(() => {
                       onChange={(e) => setNuevoCliente({...nuevoCliente, telefono: e.target.value})}
                     />
                   </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">N° de matrícula</label>
+                      <input
+                        type="text"
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50"
+                        placeholder="Opcional"
+                        value={nuevoCliente.nro_matricula}
+                        onChange={(e) => setNuevoCliente({...nuevoCliente, nro_matricula: e.target.value})}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700">Letra</label>
+                      <input
+                        type="text"
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring focus:ring-blue-500 focus:ring-opacity-50"
+                        placeholder="Opcional"
+                        value={nuevoCliente.letra}
+                        onChange={(e) => setNuevoCliente({...nuevoCliente, letra: e.target.value})}
+                      />
+                    </div>
+                  </div>
                 </div>
                 
                 <div className="mt-6 flex justify-end space-x-3">
@@ -427,7 +518,7 @@ useEffect(() => {
                     type="button"
                     onClick={() => {
                       setMostrarCrearCliente(false);
-                      setNuevoCliente({ nombre: '', apellido: '', telefono: '' });
+                      setNuevoCliente({ nombre: '', apellido: '', telefono: '', nro_matricula: '', letra: '' });
                     }}
                     className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50"
                     disabled={creandoCliente}
@@ -529,10 +620,16 @@ useEffect(() => {
                   </option>
                   {horariosDisponiblesRecurso.map((hora) => {
                     const finHoraCandidata = calcularHoraFinPorDuracion(hora, duracionMinutos);
+                    const horaApertura = horarioRecurso?.hora_apertura;
 
-                    const estaOcupado = horariosOcupados.some(horario => {
+                    const estaBloqueado = horariosBloqueados.some(horario => {
+                      const [inicioBloqueado, finBloqueado] = horario.split('-');
+                      return haySolapamientoDeHorarios(hora, finHoraCandidata, inicioBloqueado, finBloqueado, horaApertura);
+                    });
+
+                    const estaOcupado = !estaBloqueado && horariosOcupados.some(horario => {
                       const [inicioOcupado, finOcupado] = horario.split('-');
-                      return haySolapamientoDeHorarios(hora, finHoraCandidata, inicioOcupado, finOcupado);
+                      return haySolapamientoDeHorarios(hora, finHoraCandidata, inicioOcupado, finOcupado, horaApertura);
                     });
 
                     const horaYaPaso = (() => {
@@ -561,7 +658,11 @@ useEffect(() => {
                     let textoAdicional = '';
                     let estaDeshabilitado = false;
                     
-                    if (estaOcupado) {
+                    if (estaBloqueado) {
+                      className = 'text-red-500 bg-red-50';
+                      textoAdicional = ' (Bloqueado)';
+                      estaDeshabilitado = true;
+                    } else if (estaOcupado) {
                       className = 'text-red-500 bg-red-50';
                       textoAdicional = ' (Ocupado)';
                       estaDeshabilitado = true;
