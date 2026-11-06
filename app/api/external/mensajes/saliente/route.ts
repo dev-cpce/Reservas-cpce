@@ -76,7 +76,13 @@ export async function POST(request: NextRequest) {
         ? body.wa_message_id.trim()
         : null;
 
-    meta = { ...meta, chat_id: chatId, wa_message_id: waMessageId };
+    const tipoPayload =
+      typeof body?.payload?.tipo === 'string' && body.payload.tipo.trim()
+        ? body.payload.tipo.trim()
+        : null;
+    const payload = tipoPayload ? body.payload : null;
+
+    meta = { ...meta, chat_id: chatId, wa_message_id: waMessageId, tipo_payload: tipoPayload };
 
     if (!chatId) return fallar(400, 'El campo chat_id es requerido');
     if (!texto) return fallar(400, 'El campo texto es requerido');
@@ -133,6 +139,7 @@ export async function POST(request: NextRequest) {
       origen: 'bot',
       tipo_contenido: 'texto',
       texto,
+      payload,
       estado: 'enviado',
       created_at: ahora,
     });
@@ -143,9 +150,23 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    // El recordatorio de disponibilidad es de un solo disparo: se marca al
+    // enviarlo y se limpia apenas el bot responde algo que no sea una nueva
+    // consulta de disponibilidad (evita reenvíos en loop ante consultas repetidas).
+    const actualizacionConversacion: Record<string, unknown> = {
+      ultimo_mensaje_at: ahora,
+      updated_at: ahora,
+    };
+
+    if (tipoPayload === 'recordatorio_disponibilidad') {
+      actualizacionConversacion.recordatorio_disponibilidad_enviado_at = ahora;
+    } else if (tipoPayload !== 'disponibilidad') {
+      actualizacionConversacion.recordatorio_disponibilidad_enviado_at = null;
+    }
+
     const { error: errorActualizarConversacion } = await supabase
       .from('conversacion')
-      .update({ ultimo_mensaje_at: ahora, updated_at: ahora })
+      .update(actualizacionConversacion)
       .eq('id', conversacion.id);
 
     if (errorActualizarConversacion) {
