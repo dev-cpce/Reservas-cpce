@@ -85,7 +85,7 @@ export const TiempoRestante = ({ idReserva, estadoReserva, onVencimiento }: Tiem
       <div className="w-16 h-1 bg-gray-200 rounded-full overflow-hidden">
         <div 
           className={`h-full ${getProgressColorClass()} transition-all duration-1000 ease-linear`}
-          style={{ width: `${100 - (tiempoRestante.segundosRestantes / 300) * 100}%` }}
+          style={{ width: `${100 - (tiempoRestante.segundosRestantes / 600) * 100}%` }}
         />
       </div>
       

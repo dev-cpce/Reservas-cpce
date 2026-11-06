@@ -426,7 +426,7 @@ export async function POST(request: NextRequest) {
     // - concurrencia
     //
     // Además establece automáticamente:
-    // fecha_expiracion_pago = NOW() + 5 minutos
+    // fecha_expiracion_pago = NOW() + 10 minutos
     // --------------------------------------------------------
 
     const { data: resultadoRpc, error: rpcError } = await supabase.rpc(
@@ -600,7 +600,7 @@ export async function POST(request: NextRequest) {
       },
       message:
         `Reserva creada exitosamente para ${cliente.nombre} ${cliente.apellido}. ` +
-        `Tiene 5 minutos para completar el pago.`,
+        `Tiene 10 minutos para completar el pago.`,
     });
     } catch (e) {
       await logSystemEvent({

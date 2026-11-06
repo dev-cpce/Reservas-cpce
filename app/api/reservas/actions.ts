@@ -395,7 +395,7 @@ export async function obtenerReservasPorDiaSemana() {
 // El plazo real de las reservas nuevas lo fija crear_reserva_recurso en la base.
 function minutosPlazoLegacy(): number {
   const valor = Number(process.env.AUTOCANCEL_MINUTOS);
-  return Number.isFinite(valor) && valor > 0 ? Math.floor(valor) : 5;
+  return Number.isFinite(valor) && valor > 0 ? Math.floor(valor) : 10;
 }
 
 // Función para obtener reservas pendientes que exceden el tiempo límite
@@ -460,7 +460,7 @@ async function finalizarAutocancelacion(
       level: 'info',
       source: 'reservas',
       event: 'RESERVA_AUTO_CANCELLED',
-      message: 'Reserva cancelada automáticamente por falta de pago en 5 minutos',
+      message: 'Reserva cancelada automáticamente por falta de pago en 10 minutos',
       requestId,
       metadata: {
         id_reserva: reserva.id_reserva,
@@ -491,7 +491,7 @@ async function finalizarAutocancelacion(
   return {
     success: true,
     canceladas: reservasCanceladas.length,
-    mensaje: `Se cancelaron ${reservasCanceladas.length} reservas pendientes que excedieron el tiempo límite de 5 minutos`,
+    mensaje: `Se cancelaron ${reservasCanceladas.length} reservas pendientes que excedieron el tiempo límite de 10 minutos`,
     reservas: reservasCanceladas
   };
 }
@@ -622,7 +622,7 @@ export async function obtenerTiempoRestanteReserva(idReserva: number) {
     const fechaCreacion = new Date(data.created_at);
     const ahora = new Date();
     const tiempoTranscurridoMs = ahora.getTime() - fechaCreacion.getTime();
-    const tiempoLimiteMs = 5 * 60 * 1000; // 5 minutos en milisegundos
+    const tiempoLimiteMs = 10 * 60 * 1000; // 10 minutos en milisegundos
     const tiempoRestanteMs = Math.max(0, tiempoLimiteMs - tiempoTranscurridoMs);
     
     const minutosRestantes = Math.floor(tiempoRestanteMs / (60 * 1000));

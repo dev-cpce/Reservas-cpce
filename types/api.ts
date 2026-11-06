@@ -158,14 +158,33 @@ export interface MensajeEntranteResponse {
   duplicado: boolean;
 }
 
+export interface MensajeSalientePayload {
+  tipo?: string;
+  fecha?: string | null;
+}
+
 export interface MensajeSalienteRequest {
   chat_id: string;
   texto: string;
   wa_message_id?: string;
+  payload?: MensajeSalientePayload;
 }
 
 export interface MensajeSalienteResponse {
   duplicado: boolean;
+}
+
+// ===== Recordatorio de disponibilidad (seguimiento post-consulta) =====
+
+export interface RecordatorioDisponibilidad {
+  id_conversacion: number;
+  chat_id: string;
+  fecha: string | null;
+  ultimo_mensaje_bot_at: string;
+}
+
+export interface RecordatoriosDisponibilidadResponse {
+  recordatorios: RecordatorioDisponibilidad[];
 }
 
 export interface HandoffConversacionRequest {
