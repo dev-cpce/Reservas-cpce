@@ -19,6 +19,7 @@ export default function ReporteResultados({ reporte }: ReporteResultadosProps) {
     clientes,
     ingresosPorEstadoPago,
     ingresosPorRecurso,
+    detallePagosAprobados,
     cancelaciones,
     bloqueos,
     ocupacion,
@@ -92,6 +93,7 @@ export default function ReporteResultados({ reporte }: ReporteResultadosProps) {
       <h2 className="text-xl font-bold text-gray-900 mb-3">Ingresos</h2>
       <TablaSeccionReporte
         titulo="Ingresos por Estado de Pago"
+        descripcion="Pagos impactados en el período (según la fecha del pago, no la fecha de uso del recurso)."
         columnas={['Estado de Pago', 'Cantidad', 'Monto']}
         filas={ingresosPorEstadoPago.map((i) => [i.estado_pago, i.cantidad, `$${i.monto.toLocaleString()}`])}
       />
@@ -100,7 +102,23 @@ export default function ReporteResultados({ reporte }: ReporteResultadosProps) {
         columnas={['Recurso', 'Ingresos']}
         filas={ingresosPorRecurso.map((i) => [i.nombre, `$${i.ingresos.toLocaleString()}`])}
       />
-
+      <TablaSeccionReporte
+        titulo="Pagos Aprobados y Reservas"
+        descripcion="Pagos aprobados del período con su reserva y cliente asociados."
+        columnas={['N° Pago', 'ID Mercado Pago', 'Fecha de Pago', 'Reserva', 'Fecha de Reserva', 'Horario', 'Recurso', 'Cliente', 'Monto', 'Estado de Reserva']}
+        filas={detallePagosAprobados.map((p) => [
+          p.id_pago,
+          p.mp_id || '-',
+          p.fecha_pago.split('-').reverse().join('-'),
+          `#${p.id_reserva}`,
+          p.fecha_reserva.split('-').reverse().join('-'),
+          `${p.hora_inicio} - ${p.hora_fin}`,
+          p.recurso_nombre,
+          p.cliente_nombre,
+          `$${p.monto.toLocaleString()}`,
+          p.estado_reserva
+        ])}
+      />
 
       {/* 7. Bloqueos y mantenimiento */}
       <h2 className="text-xl font-bold text-gray-900 mb-3">Bloqueos y Mantenimiento</h2>
@@ -123,9 +141,10 @@ export default function ReporteResultados({ reporte }: ReporteResultadosProps) {
       <h2 className="text-xl font-bold text-gray-900 mb-3">Detalle de Reservas</h2>
       <TablaSeccionReporte
         titulo="Detalle de Reservas"
+        descripcion="* Reserva con descuento o voucher."
         columnas={['Nro.', 'Fecha', 'Horario', 'Recurso', 'Cliente', 'Tipo Cliente', 'Estado', 'Costo']}
         filas={detalleReservas.map((r) => [
-          r.id_reserva,
+          r.con_beneficio ? `${r.id_reserva} *` : r.id_reserva,
           r.fecha_reserva,
           `${r.hora_inicio?.substring(0, 5) || ''} - ${r.hora_fin?.substring(0, 5) || ''}`,
           r.recurso_nombre,

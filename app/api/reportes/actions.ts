@@ -85,7 +85,7 @@ export async function obtenerReporteCompleto(
   let queryReservas = supabase
     .from('reserva')
     .select(
-      'id_reserva, id_cliente, id_recurso, fecha_reserva, hora_inicio, hora_fin, duracion_minutos, estado_reserva, costo_reserva, fecha_expiracion_pago, created_at'
+      'id_reserva, id_cliente, id_recurso, fecha_reserva, hora_inicio, hora_fin, duracion_minutos, estado_reserva, costo_reserva, fecha_expiracion_pago, created_at, id_voucher, id_descuento'
     )
     .gte('fecha_reserva', filtros.fechaDesde)
     .lte('fecha_reserva', filtros.fechaHasta);
@@ -126,16 +126,27 @@ export async function obtenerReporteCompleto(
     )
   );
 
-  const idsReserva = (reservasData || []).map(
-    r => r.id_reserva
-  );
+  // Los pagos se toman por la fecha en que se impactaron (fecha_pago, hora de
+  // Buenos Aires), no por la fecha de la reserva. La ventana en la consulta es
+  // amplia y el filtro exacto por día se hace abajo.
+  const diaMs = 24 * 60 * 60 * 1000;
+  const ventanaDesde = new Date(
+    new Date(`${filtros.fechaDesde}T00:00:00Z`).getTime() - diaMs
+  )
+    .toISOString()
+    .slice(0, 19);
+  const ventanaHasta = new Date(
+    new Date(`${filtros.fechaHasta}T00:00:00Z`).getTime() + 2 * diaMs
+  )
+    .toISOString()
+    .slice(0, 19);
 
   // 2. Datos relacionados:
   //    clientes, recursos, pagos, horarios y bloqueos.
   const [
     { data: clientesData },
     { data: recursosData },
-    { data: pagosData },
+    { data: pagosRawData },
     { data: horariosData },
     { data: bloqueosData }
   ] = await Promise.all([
@@ -161,21 +172,13 @@ export async function obtenerReporteCompleto(
         'id_recurso, nombre, tipo_recurso, estado, activo'
       ),
 
-    idsReserva.length > 0
-      ? supabase
-          .from('pago')
-          .select(
-            'id_pago, id_reserva, monto, estado_pago'
-          )
-          .in('id_reserva', idsReserva)
-      : Promise.resolve({
-          data: [] as {
-            id_pago: number;
-            id_reserva: number;
-            monto: number;
-            estado_pago: string;
-          }[]
-        }),
+    supabase
+      .from('pago')
+      .select(
+        'id_pago, id_reserva, monto, estado_pago, fecha_pago, mp_id'
+      )
+      .gte('fecha_pago', ventanaDesde)
+      .lte('fecha_pago', ventanaHasta),
 
     supabase
       .from('recurso_horario')
@@ -230,22 +233,132 @@ export async function obtenerReporteCompleto(
     );
   });
 
-  const idsReservaFiltradas = new Set(
-    reservas.map(r => r.id_reserva)
+  // Pagos impactados dentro del rango (día de Buenos Aires).
+  const formatoDiaAR = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+
+  const pagosEnRango = (pagosRawData || []).filter(p => {
+    if (!p.fecha_pago) {
+      return false;
+    }
+
+    const fecha = new Date(p.fecha_pago);
+
+    if (isNaN(fecha.getTime())) {
+      return false;
+    }
+
+    const dia = formatoDiaAR.format(fecha);
+
+    return (
+      dia >= filtros.fechaDesde &&
+      dia <= filtros.fechaHasta
+    );
+  });
+
+  // Datos de las reservas de esos pagos (pueden ser de otras fechas de uso).
+  const infoReservaPago = new Map<
+    number,
+    {
+      id_cliente: number;
+      id_recurso: number;
+      estado_reserva: string;
+      fecha_reserva: string;
+      hora_inicio: string;
+      hora_fin: string;
+    }
+  >();
+
+  reservasData?.forEach(r =>
+    infoReservaPago.set(r.id_reserva, r)
   );
 
-  const pagos = (pagosData || []).filter(p =>
-    idsReservaFiltradas.has(p.id_reserva)
+  const idsReservaFaltantes = Array.from(
+    new Set(
+      pagosEnRango
+        .map(p => p.id_reserva)
+        .filter(id => !infoReservaPago.has(id))
+    )
   );
+
+  if (idsReservaFaltantes.length > 0) {
+    const { data: extras } = await supabase
+      .from('reserva')
+      .select(
+        'id_reserva, id_cliente, id_recurso, estado_reserva, fecha_reserva, hora_inicio, hora_fin'
+      )
+      .in('id_reserva', idsReservaFaltantes);
+
+    extras?.forEach(r =>
+      infoReservaPago.set(r.id_reserva, r)
+    );
+
+    const idsClienteFaltantes = Array.from(
+      new Set(
+        (extras || [])
+          .map(r => r.id_cliente)
+          .filter(id => !clienteMap.has(id))
+      )
+    );
+
+    if (idsClienteFaltantes.length > 0) {
+      const { data: clientesExtra } = await supabase
+        .from('cliente')
+        .select(
+          'id_cliente, nombre, apellido, tipo_cliente'
+        )
+        .in('id_cliente', idsClienteFaltantes);
+
+      clientesExtra?.forEach(c =>
+        clienteMap.set(c.id_cliente, c)
+      );
+    }
+  }
+
+  const pagos = pagosEnRango.filter(p => {
+    const info = infoReservaPago.get(p.id_reserva);
+
+    if (!info) {
+      return false;
+    }
+
+    if (
+      filtros.idRecurso &&
+      info.id_recurso !== filtros.idRecurso
+    ) {
+      return false;
+    }
+
+    if (
+      filtros.estadoReserva &&
+      info.estado_reserva !== filtros.estadoReserva
+    ) {
+      return false;
+    }
+
+    if (
+      filtros.tipoCliente &&
+      clienteMap.get(info.id_cliente)
+        ?.tipo_cliente !== filtros.tipoCliente
+    ) {
+      return false;
+    }
+
+    return true;
+  });
 
   const pagosAprobados = pagos.filter(
     p => p.estado_pago === 'aprobado'
   );
 
   const idReservaARecurso = new Map(
-    reservas.map(r => [
-      r.id_reserva,
-      r.id_recurso
+    pagos.map(p => [
+      p.id_reserva,
+      infoReservaPago.get(p.id_reserva)!.id_recurso
     ])
   );
 
@@ -457,21 +570,18 @@ export async function obtenerReporteCompleto(
     new Map<number, number>();
 
   pagosAprobados.forEach(p => {
-    const reserva = reservas.find(
-      r =>
-        r.id_reserva ===
-        p.id_reserva
-    );
+    const idCliente = infoReservaPago.get(
+      p.id_reserva
+    )?.id_cliente;
 
-    if (!reserva) {
+    if (idCliente == null) {
       return;
     }
 
     gastoPorClienteMap.set(
-      reserva.id_cliente,
-      (gastoPorClienteMap.get(
-        reserva.id_cliente
-      ) || 0) + (p.monto || 0)
+      idCliente,
+      (gastoPorClienteMap.get(idCliente) || 0) +
+        (p.monto || 0)
     );
   });
 
@@ -555,8 +665,40 @@ export async function obtenerReporteCompleto(
       })
     );
 
+  const detallePagosAprobados = pagosAprobados
+    .map(p => {
+      const info = infoReservaPago.get(p.id_reserva)!;
+      const cliente = clienteMap.get(info.id_cliente);
+
+      return {
+        id_pago: p.id_pago,
+        mp_id: p.mp_id || null,
+        id_reserva: p.id_reserva,
+        fecha_pago: formatoDiaAR.format(
+          new Date(p.fecha_pago)
+        ),
+        fecha_reserva: info.fecha_reserva,
+        hora_inicio: (info.hora_inicio || '').substring(0, 5),
+        hora_fin: (info.hora_fin || '').substring(0, 5),
+        recurso_nombre:
+          recursoMap.get(info.id_recurso)?.nombre ||
+          `Recurso ${info.id_recurso}`,
+        cliente_nombre: cliente
+          ? `${cliente.nombre} ${cliente.apellido}`.trim()
+          : '-',
+        estado_reserva: info.estado_reserva,
+        monto: p.monto || 0
+      };
+    })
+    .sort((a, b) => a.id_pago - b.id_pago);
+
   const ingresosPorRecurso =
-    idsRecursoConReservas
+    Array.from(
+      new Set([
+        ...idsRecursoConReservas,
+        ...ingresosPorRecursoMap.keys()
+      ])
+    )
       .map(idRecurso => ({
         id_recurso: idRecurso,
         nombre:
@@ -865,6 +1007,9 @@ export async function obtenerReporteCompleto(
             r.estado_reserva,
           costo_reserva:
             r.costo_reserva,
+          con_beneficio:
+            r.id_voucher != null ||
+            r.id_descuento != null,
           cliente_nombre:
             cliente
               ? `${cliente.nombre} ${
@@ -899,6 +1044,7 @@ export async function obtenerReporteCompleto(
     clientes,
     ingresosPorEstadoPago,
     ingresosPorRecurso,
+    detallePagosAprobados,
     cancelaciones,
     bloqueos,
     ocupacion,

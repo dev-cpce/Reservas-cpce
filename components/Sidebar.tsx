@@ -14,11 +14,15 @@ import {
     ChartBarIcon,
     ArrowRightOnRectangleIcon,
     ShieldCheckIcon,
-    ChatBubbleLeftRightIcon
+    ChatBubbleLeftRightIcon,
+    ReceiptPercentIcon,
+    TicketIcon
 } from '@heroicons/react/24/outline';
 import { obtenerPermisosReportes } from '@/app/api/reportes/permissions';
 import { obtenerEsAdminMonitoreo } from '@/app/api/admin/monitoreo/actions';
 import { obtenerPermisosMensajes } from '@/app/api/mensajes/actions';
+import { obtenerPermisosDescuentos } from '@/app/api/descuentos/actions';
+import { obtenerPermisosVouchers } from '@/app/api/vouchers/actions';
 
 const navigation = [
     { name: 'Inicio', href: '/dashboard', icon: HomeIcon },
@@ -27,6 +31,8 @@ const navigation = [
     { name: 'Reservas', href: '/reservas', icon: CalendarDaysIcon },
     { name: 'Clientes', href: '/clientes', icon: UserGroupIcon },
     { name: 'Pagos', href: '/pagos', icon: CreditCardIcon },
+    { name: 'Descuentos', href: '/descuentos', icon: ReceiptPercentIcon },
+    { name: 'Vouchers', href: '/vouchers', icon: TicketIcon },
     { name: 'Mensajes', href: '/mensajes', icon: ChatBubbleLeftRightIcon },
     { name: 'Reportes', href: '/reportes', icon: ChartBarIcon },
     { name: 'Monitoreo', href: '/admin', icon: ShieldCheckIcon }
@@ -41,10 +47,37 @@ export default function Sidebar() {
 
     const [puedeVerMensajes, setPuedeVerMensajes] = useState(false);
 
+    const [puedeVerDescuentos, setPuedeVerDescuentos] = useState(false);
+
+    const [puedeVerVouchers, setPuedeVerVouchers] = useState(false);
+
     useEffect(() => {
         let activo = true;
 
         const cargarPermisos = async () => {
+            try {
+                const permisosDescuentos = await obtenerPermisosDescuentos();
+
+                if (activo) {
+                    setPuedeVerDescuentos(permisosDescuentos.puedeVer);
+                }
+            } catch {
+                if (activo) {
+                    setPuedeVerDescuentos(false);
+                }
+            }
+
+            try {
+                const permisosVouchers = await obtenerPermisosVouchers();
+
+                if (activo) {
+                    setPuedeVerVouchers(permisosVouchers.puedeVer);
+                }
+            } catch {
+                if (activo) {
+                    setPuedeVerVouchers(false);
+                }
+            }
             try {
                 const permisos = await obtenerPermisosReportes();
 
@@ -100,6 +133,14 @@ export default function Sidebar() {
 
         if (item.href === '/mensajes') {
             return puedeVerMensajes;
+        }
+
+        if (item.href === '/descuentos') {
+            return puedeVerDescuentos;
+        }
+
+        if (item.href === '/vouchers') {
+            return puedeVerVouchers;
         }
 
         return true;

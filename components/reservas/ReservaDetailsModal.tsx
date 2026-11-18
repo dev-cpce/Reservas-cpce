@@ -175,6 +175,21 @@ export const ReservaDetailsModal = ({
                   <div className="mb-6">
                     <h4 className="font-medium text-gray-900 mb-3">Costo</h4>
                     <div className="bg-blue-50 rounded-lg p-4">
+                      {reserva.id_voucher != null && (
+                        <p className="text-sm font-medium text-purple-700 mb-2">Reserva gratuita por voucher</p>
+                      )}
+                      {Number(reserva.monto_descuento) > 0 && reserva.id_voucher == null && (
+                        <>
+                          <div className="flex justify-between items-center">
+                            <span className="text-sm text-gray-500">Precio base:</span>
+                            <span className="text-sm">${Number(reserva.costo_base ?? 0).toFixed(2)}</span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className="text-sm text-gray-500">Descuento:</span>
+                            <span className="text-sm text-green-700">-${Number(reserva.monto_descuento).toFixed(2)}</span>
+                          </div>
+                        </>
+                      )}
                       <div className="flex justify-between items-center">
                         <span className="text-sm text-gray-500">Costo total:</span>
                         <span className="text-lg font-bold text-blue-700">${(reserva.costo_reserva || reserva.costo_total || 0).toFixed(2)}</span>

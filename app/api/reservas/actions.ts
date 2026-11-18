@@ -5,7 +5,7 @@ import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { revalidatePath } from 'next/cache';
 
-import { Recurso, NuevaReservaRecursoInput } from '@/types';
+import { Recurso, NuevaReservaRecursoInput, PrecioReserva, OpcionesCancelacionReserva } from '@/types';
 import {
   DURACIONES_VALIDAS_MINUTOS,
   esDuracionValida,
@@ -152,7 +152,11 @@ export async function obtenerReservas() {
 }
 
 // Cambiar el estado de una reserva
-export async function cambiarEstadoReserva(id: number, estado: string) {
+export async function cambiarEstadoReserva(
+  id: number,
+  estado: string,
+  opciones: OpcionesCancelacionReserva = {}
+) {
   const requestId = `WEB-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const estadosValidos = [
     'pendiente',
@@ -228,6 +232,7 @@ export async function cambiarEstadoReserva(id: number, estado: string) {
     hora_fin,
     duracion_minutos,
     costo_reserva,
+    id_voucher,
     estado_reserva
   `)
   .eq('id_reserva', id)
@@ -251,7 +256,8 @@ if (!reservaAntes) {
     if (!(await puedeReasignarReservas())) {
       throw new Error('Solo ADMIN o GERENCIA pueden aprobar una reserva cancelada.');
     }
-    if (!(await reservaTienePagoAprobado(supabase, id))) {
+    const esGratis = reservaAntes.id_voucher != null || Number(reservaAntes.costo_reserva) === 0;
+    if (!esGratis && !(await reservaTienePagoAprobado(supabase, id))) {
       throw new Error('La reserva cancelada no tiene un pago aprobado asociado.');
     }
     await verificarDisponibilidadRecurso(
@@ -263,16 +269,41 @@ if (!reservaAntes) {
     );
   }
 
-  const { data: filasActualizadas, error } = await supabase
-    .from('reserva')
-    .update({ estado_reserva: estado })
-    .eq('id_reserva', id)
-    .select('id_reserva');
+  // Cancelar una reserva con voucher: ADMIN/GERENCIA eligen si el cupo se devuelve (por
+  // defecto) o se consume. Lo resuelve la base (cancelar_reserva_voucher).
+  const cancelaConVoucher =
+    estado === 'cancelada' &&
+    reservaAntes.id_voucher != null &&
+    estadoAnterior !== 'cancelada';
 
-  if (error || !filasActualizadas || filasActualizadas.length === 0) {
-    throw new Error(
-      'Error al cambiar el estado de la reserva - Permisos insuficientes'
-    );
+  if (cancelaConVoucher && (await puedeReasignarReservas())) {
+    const { data: cancelacion, error: errorCancelacion } = await supabase.rpc('cancelar_reserva_voucher', {
+      p_id_reserva: id,
+      p_consumir_cupo: opciones.consumirCupoVoucher === true,
+      p_motivo: opciones.motivo ?? null
+    });
+
+    if (errorCancelacion || !cancelacion?.success) {
+      throw new Error(
+        `Error al cancelar la reserva con voucher: ${errorCancelacion?.message || cancelacion?.message || cancelacion?.error_code}`
+      );
+    }
+  } else {
+    if (cancelaConVoucher && opciones.consumirCupoVoucher) {
+      throw new Error('Solo ADMIN o GERENCIA pueden cancelar consumiendo el cupo del voucher.');
+    }
+
+    const { data: filasActualizadas, error } = await supabase
+      .from('reserva')
+      .update({ estado_reserva: estado })
+      .eq('id_reserva', id)
+      .select('id_reserva');
+
+    if (error || !filasActualizadas || filasActualizadas.length === 0) {
+      throw new Error(
+        'Error al cambiar el estado de la reserva - Permisos insuficientes'
+      );
+    }
   }
 
   await logSystemEvent({
@@ -736,59 +767,64 @@ export async function obtenerBloqueosActivosRecurso(fecha: string, idRecurso: nu
   }
 }
 
-// Resuelve el precio desde la tabla `tarifa` (id_recurso + tipo_cliente + duracion_minutos
-// + vigencia). No inventa precios: si no hay tarifa vigente, lanza un error controlado.
-export async function calcularCostoReservaPorRecurso(
+// Precio de una reserva (tarifa vigente a la fecha_reserva + descuento aplicable).
+// Toda la lógica vive en la función SQL `calcular_precio_reserva`; acá solo se invoca.
+// Si no hay tarifa vigente se lanza un error controlado (no se inventan precios).
+export async function calcularPrecioReserva(
+  idCliente: number,
   idRecurso: number,
-  tipoCliente: 'SOCIO' | 'NO_SOCIO',
+  fechaReserva: string,
+  horaInicio: string,
   duracionMinutos: number
-): Promise<number> {
-  const supabase = createServerComponentClient({ cookies });
-  const hoy = obtenerFechaLocal(new Date());
+): Promise<PrecioReserva> {
+  const permitido =
+    (await tienePermisoUsuario('reservas.crear')) ||
+    (await tienePermisoUsuario('reservas.editar'));
 
-  const { data: tarifas, error } = await supabase
-    .from('tarifa')
-    .select('precio, vigente_desde, vigente_hasta')
-    .eq('id_recurso', idRecurso)
-    .eq('tipo_cliente', tipoCliente)
-    .eq('duracion_minutos', duracionMinutos)
-    .eq('activo', true);
-
-  if (error) {
-    throw new Error(`Error al consultar la tarifa: ${error.message}`);
+  if (!permitido) {
+    throw new Error('No tenés permisos para calcular el precio de una reserva.');
   }
 
-  const tarifaVigente = (tarifas || []).find(tarifa => {
-    const desdeOk = !tarifa.vigente_desde || tarifa.vigente_desde <= hoy;
-    const hastaOk = !tarifa.vigente_hasta || tarifa.vigente_hasta >= hoy;
-    return desdeOk && hastaOk;
+  const supabase = createServerComponentClient({ cookies });
+  const { data, error } = await supabase.rpc('calcular_precio_reserva', {
+    p_id_cliente: idCliente,
+    p_id_recurso: idRecurso,
+    p_fecha_reserva: fechaReserva,
+    p_hora_inicio: horaInicio,
+    p_duracion_minutos: duracionMinutos,
+    p_aplicar_descuento: true
   });
 
-  if (!tarifaVigente) {
-    throw new Error(
-      `No existe una tarifa vigente para el recurso ${idRecurso} (tipo_cliente: ${tipoCliente}, duración: ${duracionMinutos} min). Configure la tarifa antes de reservar.`
-    );
+  if (error) {
+    throw new Error(`Error al calcular el precio: ${error.message}`);
   }
 
-  return tarifaVigente.precio;
+  const resultado = data as (PrecioReserva & { success: boolean; message?: string }) | null;
+
+  if (!resultado?.success) {
+    throw new Error(resultado?.message || 'No se pudo calcular el precio de la reserva.');
+  }
+
+  return {
+    costo_base: Number(resultado.costo_base),
+    monto_descuento: Number(resultado.monto_descuento),
+    costo_final: Number(resultado.costo_final),
+    id_descuento: resultado.id_descuento ?? null,
+    descuento_nombre: resultado.descuento_nombre ?? null,
+    porcentaje_descuento: Number(resultado.porcentaje_descuento ?? 0),
+    tipo_cliente: resultado.tipo_cliente
+  };
 }
 
-// Tipo de cliente para tarifas; si no está definido se asume NO_SOCIO de forma
-// conservadora (nunca se otorgan beneficios de socio sin confirmarlo explícitamente).
-async function obtenerTipoClienteParaTarifa(idCliente: number): Promise<'SOCIO' | 'NO_SOCIO'> {
-  const supabase = createServerComponentClient({ cookies });
-
-  const { data, error } = await supabase
-    .from('cliente')
-    .select('tipo_cliente')
-    .eq('id_cliente', idCliente)
-    .single();
-
-  if (error || !data?.tipo_cliente) {
-    return 'NO_SOCIO';
+// Traduce errores de los triggers de voucher a mensajes para el usuario.
+function mensajeErrorVoucher(mensaje: string): string {
+  if (mensaje.includes('VOUCHER_CUPO_AGOTADO')) {
+    return 'El voucher de esta reserva no tiene cupo disponible en el mes de la nueva fecha.';
   }
-
-  return data.tipo_cliente === 'SOCIO' ? 'SOCIO' : 'NO_SOCIO';
+  if (mensaje.includes('No se puede cambiar el cliente de una reserva con voucher')) {
+    return 'No se puede cambiar el cliente de una reserva con voucher.';
+  }
+  return mensaje;
 }
 
 
@@ -916,24 +952,14 @@ export async function crearReservaRecurso(datos: NuevaReservaRecursoInput) {
       datos.duracion_minutos
     );
 
-    const tipoCliente = await obtenerTipoClienteParaTarifa(
-      datos.id_cliente
-    );
-
-    const costoReserva = await calcularCostoReservaPorRecurso(
-      datos.id_recurso,
-      tipoCliente,
-      datos.duracion_minutos
-    );
-
+    // El precio (tarifa + descuento) lo calcula la base dentro del RPC.
     const { data, error } = await supabase.rpc('crear_reserva_recurso', {
       p_id_cliente: datos.id_cliente,
       p_id_recurso: datos.id_recurso,
       p_fecha_reserva: datos.fecha_reserva,
       p_hora_inicio: datos.hora_inicio,
       p_hora_fin: horaFin,
-      p_duracion_minutos: datos.duracion_minutos,
-      p_costo_reserva: costoReserva
+      p_duracion_minutos: datos.duracion_minutos
     });
 
     if (error) {
@@ -948,8 +974,15 @@ export async function crearReservaRecurso(datos: NuevaReservaRecursoInput) {
         | 'HORARIO_INVALIDO'
         | 'RECURSO_NO_DISPONIBLE'
         | 'CONFLICTO_RESERVA'
-        | 'CONFLICTO_BLOQUEO';
+        | 'CONFLICTO_BLOQUEO'
+        | 'TARIFA_NO_ENCONTRADA'
+        | 'CLIENTE_NO_ENCONTRADO';
       message?: string;
+      estado_reserva?: string;
+      costo_base?: number;
+      monto_descuento?: number;
+      costo_reserva?: number;
+      id_descuento?: number | null;
     } | null;
 
     if (!resultado?.success) {
@@ -973,8 +1006,11 @@ export async function crearReservaRecurso(datos: NuevaReservaRecursoInput) {
         hora_inicio: datos.hora_inicio,
         hora_fin: horaFin,
         duracion_minutos: datos.duracion_minutos,
-        tipo_cliente: tipoCliente,
-        costo_reserva: costoReserva,
+        estado_reserva: resultado.estado_reserva,
+        costo_base: resultado.costo_base,
+        monto_descuento: resultado.monto_descuento,
+        id_descuento: resultado.id_descuento ?? null,
+        costo_reserva: resultado.costo_reserva,
       },
     });
 
@@ -1030,7 +1066,7 @@ export async function actualizarReservaRecurso(
 
   const { data: reservaActual, error: errorActual } = await supabase
     .from('reserva')
-    .select('estado_reserva')
+    .select('estado_reserva, id_voucher, costo_reserva')
     .eq('id_reserva', id)
     .maybeSingle();
 
@@ -1038,26 +1074,40 @@ export async function actualizarReservaRecurso(
     throw new Error('La reserva no existe.');
   }
 
-  // Confirmadas/canceladas solo se reasignan (ADMIN/GERENCIA) si tienen pago aprobado;
-  // se conserva el costo ya abonado.
+  const tieneVoucher = reservaActual.id_voucher != null;
+  // Las reservas gratis (voucher o 100% de descuento) no generan pago: no se les exige uno aprobado.
+  const esGratis = tieneVoucher || Number(reservaActual.costo_reserva) === 0;
+
+  // Confirmadas/canceladas solo se reasignan (ADMIN/GERENCIA) si tienen pago aprobado
+  // (o son gratis); se conserva el costo ya abonado.
   const esReasignacion = ['confirmada', 'cancelada'].includes(reservaActual.estado_reserva);
 
   if (esReasignacion) {
     if (!(await puedeReasignarReservas())) {
       throw new Error('Solo ADMIN o GERENCIA pueden editar reservas confirmadas o canceladas.');
     }
-    if (!(await reservaTienePagoAprobado(supabase, id))) {
+    if (!esGratis && !(await reservaTienePagoAprobado(supabase, id))) {
       throw new Error('Solo se pueden editar reservas confirmadas o canceladas con un pago aprobado asociado.');
     }
   }
 
   await verificarDisponibilidadRecurso(datos.fecha_reserva, datos.hora_inicio, horaFin, datos.id_recurso, id);
 
-  const tipoCliente = await obtenerTipoClienteParaTarifa(datos.id_cliente);
-  const costoReserva = await calcularCostoReservaPorRecurso(datos.id_recurso, tipoCliente, datos.duracion_minutos);
+  // En pendientes sin voucher se valida antes que exista tarifa para el nuevo horario;
+  // el recálculo definitivo lo hace la base (recalcular_precio_reserva) tras guardar.
+  const recalculaPrecio = !esReasignacion && !tieneVoucher;
+  if (recalculaPrecio) {
+    await calcularPrecioReserva(
+      datos.id_cliente,
+      datos.id_recurso,
+      datos.fecha_reserva,
+      datos.hora_inicio,
+      datos.duracion_minutos
+    );
+  }
 
-  // Reasignar una reserva cancelada con pago aprobado la confirma de una: ya
-  // tiene el pago y el nuevo horario quedó validado como libre arriba.
+  // Reasignar una reserva cancelada con pago aprobado (o gratis) la confirma de una: ya
+  // está paga/cubierta y el nuevo horario quedó validado como libre arriba.
   const estadoNuevo = esReasignacion ? 'confirmada' : undefined;
 
   const { error } = await supabase
@@ -1069,13 +1119,28 @@ export async function actualizarReservaRecurso(
       hora_inicio: datos.hora_inicio,
       hora_fin: horaFin,
       duracion_minutos: datos.duracion_minutos,
-      ...(esReasignacion ? {} : { costo_reserva: costoReserva }),
       ...(estadoNuevo ? { estado_reserva: estadoNuevo } : {})
     })
     .eq('id_reserva', id);
 
   if (error) {
-    throw new Error(`Error al actualizar la reserva: ${error.message}`);
+    throw new Error(`Error al actualizar la reserva: ${mensajeErrorVoucher(error.message)}`);
+  }
+
+  let costoReserva: number | null = esReasignacion || tieneVoucher ? Number(reservaActual.costo_reserva) : null;
+
+  if (recalculaPrecio) {
+    const { data: recalculo, error: errorRecalculo } = await supabase.rpc('recalcular_precio_reserva', {
+      p_id_reserva: id
+    });
+
+    if (errorRecalculo || !recalculo?.success) {
+      throw new Error(
+        `La reserva se actualizó pero no se pudo recalcular el precio: ${errorRecalculo?.message || recalculo?.message || recalculo?.error_code}`
+      );
+    }
+
+    costoReserva = Number(recalculo.costo_final);
   }
 
   await logSystemEvent({

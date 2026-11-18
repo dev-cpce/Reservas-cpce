@@ -18,7 +18,7 @@ export default function PagoModal({ isOpen, onClose, onSave, pago, title }: Pago
   const [formData, setFormData] = useState<PagoFormData>({
     id_reserva: 0,
     monto: 0,
-    estado_pago: 'pendiente',
+    estado_pago: 'aprobado',
     mp_id: ''
   });
   
@@ -71,7 +71,7 @@ export default function PagoModal({ isOpen, onClose, onSave, pago, title }: Pago
         setFormData({
           id_reserva: 0,
           monto: 0,
-          estado_pago: 'pendiente',
+          estado_pago: 'aprobado',
           mp_id: ''
         });
       }

@@ -34,7 +34,8 @@ function formatearMoneda(valor: number): string {
   return new Intl.NumberFormat('es-AR', {
     style: 'currency',
     currency: 'ARS',
-    maximumFractionDigits: 0,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   }).format(valor || 0);
 }
 
@@ -734,6 +735,51 @@ export function generarReportePdf(
         },
       }
     );
+
+    agregarSubtitulo(
+      doc,
+      'Pagos aprobados y reservas'
+    );
+
+    const formatearDia = (d: string) =>
+      d.split('-').reverse().join('-');
+
+    agregarTabla(
+      doc,
+      [
+        'N° Pago',
+        'ID Mercado Pago',
+        'Fecha pago',
+        'Fecha reserva',
+        'Horario',
+        'Recurso',
+        'Cliente',
+        'Monto',
+      ],
+      reporte.detallePagosAprobados.map((p) => [
+        p.id_pago,
+        p.mp_id || '-',
+        formatearDia(p.fecha_pago),
+        formatearDia(p.fecha_reserva),
+        `${p.hora_inicio} - ${p.hora_fin}`,
+        p.recurso_nombre,
+        p.cliente_nombre,
+        formatearMoneda(p.monto),
+      ]),
+      {
+        fontSize: 7,
+        columnStyles: {
+          0: { cellWidth: 12, halign: 'center' },
+          1: { cellWidth: 27 },
+          2: { cellWidth: 19 },
+          3: { cellWidth: 19 },
+          4: { cellWidth: 22 },
+          5: { cellWidth: 17 },
+          6: { cellWidth: 44 },
+          7: { cellWidth: 20, halign: 'right' },
+        },
+      }
+    );
   }
 
   /*
@@ -921,7 +967,8 @@ export function generarReportePdf(
         formatearHora(reserva.hora_fin),
         `${reserva.duracion_minutos || 0} min`,
         reserva.estado_reserva,
-        formatearMoneda(reserva.costo_reserva),
+        formatearMoneda(reserva.costo_reserva) +
+          (reserva.con_beneficio ? ' *' : ''),
       ]),
       {
         fontSize: 6.5,

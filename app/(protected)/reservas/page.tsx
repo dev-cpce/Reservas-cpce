@@ -5,7 +5,8 @@ import {
   Reserva,
   Cliente,
   Recurso,
-  NuevaReservaRecursoInput
+  NuevaReservaRecursoInput,
+  OpcionesCancelacionReserva
 } from '@/types';
 import { PlusIcon } from '@heroicons/react/24/outline';
 import ReservaForm from '@/components/reservas/ReservaForm';
@@ -210,10 +211,11 @@ export default function ReservasPage() {
 
           onCambiarEstado={async (
             id: number,
-            estado: string
+            estado: string,
+            opciones?: OpcionesCancelacionReserva
           ) => {
             try {
-              await cambiarEstadoReserva(id, estado);
+              await cambiarEstadoReserva(id, estado, opciones);
 
               const nuevasReservas = await obtenerReservas();
               setReservas(nuevasReservas);
