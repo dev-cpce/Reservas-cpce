@@ -27,7 +27,14 @@ export type Permiso =
   | 'reportes.exportar'
 
   | 'mensajes.ver'
-  | 'mensajes.enviar';
+  | 'mensajes.enviar'
+
+  | 'descuentos.ver'
+  | 'descuentos.crear'
+  | 'descuentos.editar'
+  | 'vouchers.ver'
+  | 'vouchers.crear'
+  | 'vouchers.editar';
 
 const PERMISOS_ADMIN: readonly Permiso[] = [
   'dashboard.ver',
@@ -63,6 +70,14 @@ const PERMISOS_ADMIN: readonly Permiso[] = [
 
   'mensajes.ver',
   'mensajes.enviar',
+
+  'descuentos.ver',
+  'descuentos.crear',
+  'descuentos.editar',
+
+  'vouchers.ver',
+  'vouchers.crear',
+  'vouchers.editar',
 ];
 
 const PERMISOS_GERENCIA: readonly Permiso[] = [

@@ -64,6 +64,7 @@ interface UserContextBody {
 
   accion_pendiente?: string | null;
 
+  codigo_voucher?: string | null;
 }
 
 /* ============================================================
@@ -145,6 +146,7 @@ export async function GET(request: NextRequest) {
     duracion_minutos,
     id_reserva,
     accion_pendiente,
+    codigo_voucher,
     updated_at
     `
     )
@@ -230,6 +232,14 @@ export async function POST(request: NextRequest) {
       body.accion_pendiente
     );
 
+    // Solo se guarda si tiene formato de código de voucher; la validez la decide la base.
+    const codigoCrudo = cleanValue(body.codigo_voucher);
+    const codigo_voucher =
+      typeof codigoCrudo === "string" &&
+      /^CPCE_C[A-Z0-9]{8}$/.test(codigoCrudo.trim().toUpperCase())
+        ? codigoCrudo.trim().toUpperCase()
+        : null;
+
     /* ========================================================
        VALIDAR DURACIÓN
     ======================================================== */
@@ -269,6 +279,8 @@ export async function POST(request: NextRequest) {
           id_reserva,
 
           accion_pendiente,
+
+          codigo_voucher,
 
           updated_at: new Date().toISOString(),
         },

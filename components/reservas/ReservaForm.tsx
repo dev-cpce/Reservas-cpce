@@ -1,9 +1,9 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Reserva, Cliente, Recurso, NuevaReservaRecursoInput } from '@/types';
+import { Reserva, Cliente, Recurso, NuevaReservaRecursoInput, PrecioReserva } from '@/types';
 import { CalendarIcon, ClockIcon, MagnifyingGlassIcon, PlusIcon, XMarkIcon } from '@heroicons/react/24/outline';
-import { obtenerReservasPorFechaYRecurso, obtenerHorarioRecurso, obtenerBloqueosActivosRecurso } from '@/app/api/reservas/actions';
+import { obtenerReservasPorFechaYRecurso, obtenerHorarioRecurso, obtenerBloqueosActivosRecurso, calcularPrecioReserva } from '@/app/api/reservas/actions';
 import {
   crearCliente,
   buscarClientes
@@ -233,6 +233,41 @@ useEffect(() => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [duracionMinutos]);
   
+  // Vista previa de precio: la calcula la base (tarifa + descuento); el form no replica la lógica.
+  const [precio, setPrecio] = useState<PrecioReserva | null>(null);
+  const [errorPrecio, setErrorPrecio] = useState<string>('');
+  const [calculandoPrecio, setCalculandoPrecio] = useState<boolean>(false);
+  const tieneVoucher = reserva?.id_voucher != null;
+
+  useEffect(() => {
+    if (tieneVoucher || !clienteId || !recursoId || !horaInicio || !fecha) {
+      setPrecio(null);
+      setErrorPrecio('');
+      return;
+    }
+
+    let cancelado = false;
+    setCalculandoPrecio(true);
+    calcularPrecioReserva(clienteId, recursoId, fecha, horaInicio, duracionMinutos)
+      .then(resultado => {
+        if (cancelado) return;
+        setPrecio(resultado);
+        setErrorPrecio('');
+      })
+      .catch(err => {
+        if (cancelado) return;
+        setPrecio(null);
+        setErrorPrecio(err instanceof Error ? err.message : 'No se pudo calcular el precio.');
+      })
+      .finally(() => {
+        if (!cancelado) setCalculandoPrecio(false);
+      });
+
+    return () => {
+      cancelado = true;
+    };
+  }, [clienteId, recursoId, fecha, horaInicio, duracionMinutos, tieneVoucher]);
+
   const validarFormulario = (): boolean => {
     if (!clienteId) {
       setError('Debe seleccionar un cliente');
@@ -743,7 +778,39 @@ useEffect(() => {
                 <span>{duracionMinutos} minutos</span>
               </div>
             </div>
-            <p className="text-xs text-blue-700 mt-2">El costo se calculará automáticamente según la tarifa vigente para el cliente seleccionado.</p>
+            <div className="mt-3 pt-3 border-t border-blue-200 space-y-1 text-sm text-blue-800">
+              {tieneVoucher ? (
+                <p className="font-medium">Reserva con voucher: sin costo.</p>
+              ) : calculandoPrecio ? (
+                <p>Calculando precio...</p>
+              ) : errorPrecio ? (
+                <p className="text-red-700">{errorPrecio}</p>
+              ) : precio ? (
+                <>
+                  <div className="flex justify-between">
+                    <span>Precio base:</span>
+                    <span>${precio.costo_base.toFixed(2)}</span>
+                  </div>
+                  {precio.monto_descuento > 0 && (
+                    <div className="flex justify-between text-green-700">
+                      <span>
+                        Descuento{precio.descuento_nombre ? ` (${precio.descuento_nombre})` : ''} {precio.porcentaje_descuento}%:
+                      </span>
+                      <span>-${precio.monto_descuento.toFixed(2)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between font-semibold text-blue-900">
+                    <span>Total:</span>
+                    <span>${precio.costo_final.toFixed(2)}</span>
+                  </div>
+                  {precio.costo_final === 0 && (
+                    <p className="text-xs">Sin costo: la reserva se crea confirmada, sin pago.</p>
+                  )}
+                </>
+              ) : (
+                <p className="text-xs text-blue-700">Seleccioná cliente, recurso y horario para ver el precio.</p>
+              )}
+            </div>
           </div>
         )}
 

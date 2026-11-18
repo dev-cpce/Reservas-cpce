@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Reserva } from '@/types';
+import { Reserva, OpcionesCancelacionReserva } from '@/types';
 import { format, parseISO } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { ReservaDetailsModal } from './ReservaDetailsModal';
@@ -18,7 +18,7 @@ interface ReservasListProps {
   reservas: Reserva[];
   onEdit: (reserva: Reserva) => void;
   onDelete: (id: number) => void;
-  onCambiarEstado: (id: number, estado: string) => void;
+  onCambiarEstado: (id: number, estado: string, opciones?: OpcionesCancelacionReserva) => void;
   puedeEliminar: boolean;
   puedeCancelar: boolean;
   puedeReasignar?: boolean;
@@ -180,6 +180,15 @@ export const ReservasList = ({
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                     ${(reserva.costo_reserva || reserva.costo_total || 0).toFixed(2)}
+                    {reserva.id_voucher != null ? (
+                      <span className="ml-2 px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-purple-100 text-purple-800">
+                        Voucher
+                      </span>
+                    ) : Number(reserva.monto_descuento) > 0 ? (
+                      <span className="block text-xs text-green-700">
+                        Desc. -${Number(reserva.monto_descuento).toFixed(2)}
+                      </span>
+                    ) : null}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex flex-col items-start space-y-2">
@@ -210,10 +219,12 @@ export const ReservasList = ({
       <EyeIcon className="h-5 w-5" />
     </button>
 
-    {/* Editar - pendientes; confirmadas/canceladas con pago solo ADMIN/GERENCIA */}
+    {/* Editar - pendientes; confirmadas/canceladas con pago (o gratis: voucher/100%) solo ADMIN/GERENCIA */}
     {(reserva.estado_reserva === 'pendiente' ||
       (puedeReasignar &&
-        reserva.tiene_pago_aprobado &&
+        (reserva.tiene_pago_aprobado ||
+          reserva.id_voucher != null ||
+          Number(reserva.costo_reserva) === 0) &&
         (reserva.estado_reserva === 'confirmada' ||
           reserva.estado_reserva === 'cancelada'))) && (
       <button
@@ -251,6 +262,27 @@ export const ReservasList = ({
           }
           className="text-red-600 hover:text-red-900"
           title="Cancelar reserva"
+        >
+          <XCircleIcon className="h-5 w-5" />
+        </button>
+      )}
+
+    {/* Cancelar reserva con voucher (confirmada) - ADMIN/GERENCIA: elige si devuelve el cupo */}
+    {reserva.estado_reserva === 'confirmada' &&
+      reserva.id_voucher != null &&
+      puedeReasignar && (
+        <button
+          onClick={() => {
+            if (!window.confirm('¿Cancelar esta reserva con voucher?')) return;
+            const devolverCupo = window.confirm(
+              'Aceptar: se devuelve el cupo al cliente.\nCancelar: el turno cuenta como usado y el cupo NO se devuelve.'
+            );
+            onCambiarEstado(reserva.id_reserva, 'cancelada', {
+              consumirCupoVoucher: !devolverCupo
+            });
+          }}
+          className="text-red-600 hover:text-red-900"
+          title="Cancelar reserva con voucher"
         >
           <XCircleIcon className="h-5 w-5" />
         </button>

@@ -30,6 +30,7 @@ interface CrearReservaExternalRequest {
   fecha_reserva: string;
   hora_inicio: string;
   duracion_minutos: 90 | 120;
+  codigo_voucher?: string | null;
 }
 
 interface ActualizarReservaExternalRequest {
@@ -366,54 +367,12 @@ export async function POST(request: NextRequest) {
     }
 
     // --------------------------------------------------------
-    // 4. Buscar tarifa automáticamente
+    // 4. Precio
     // --------------------------------------------------------
-    // n8n NO manda el precio.
-    // El backend determina el precio según:
-    // recurso + tipo de cliente + duración.
+    // n8n NO manda el precio. La base (calcular_precio_reserva, invocada
+    // dentro de crear_reserva_recurso) determina tarifa + descuento según
+    // recurso + tipo de cliente + duración + fecha_reserva.
     // --------------------------------------------------------
-
-    const { data: tarifa, error: tarifaError } = await supabase
-      .from('tarifa')
-      .select(
-        'id_tarifa, id_recurso, tipo_cliente, duracion_minutos, precio, vigente_desde, vigente_hasta, activo'
-      )
-      .eq('id_recurso', body.id_recurso)
-      .eq('tipo_cliente', cliente.tipo_cliente)
-      .eq('duracion_minutos', body.duracion_minutos)
-      .eq('activo', true)
-      .lte('vigente_desde', body.fecha_reserva)
-      .or(
-        `vigente_hasta.is.null,vigente_hasta.gte.${body.fecha_reserva}`
-      )
-      .order('vigente_desde', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (tarifaError) {
-      return jsonResponse(500, {
-        success: false,
-        error: `Error al buscar la tarifa: ${tarifaError.message}`,
-      });
-    }
-
-    if (!tarifa) {
-      return jsonResponse(409, {
-        success: false,
-        error:
-          `No existe una tarifa activa para ${cliente.tipo_cliente} ` +
-          `de ${body.duracion_minutos} minutos en el recurso solicitado.`,
-      });
-    }
-
-    const costoReserva = Number(tarifa.precio);
-
-    if (!Number.isFinite(costoReserva)) {
-      return jsonResponse(500, {
-        success: false,
-        error: 'La tarifa configurada para la reserva no es válida.',
-      });
-    }
 
     // --------------------------------------------------------
     // 5. Crear reserva mediante RPC
@@ -425,22 +384,35 @@ export async function POST(request: NextRequest) {
     // - bloqueos administrativos
     // - concurrencia
     //
-    // Además establece automáticamente:
-    // fecha_expiracion_pago = NOW() + 10 minutos
+    // Además calcula el precio y establece:
+    // - costo > 0: pendiente + fecha_expiracion_pago
+    // - costo = 0 (descuento 100%): confirmada, sin vencimiento de pago
     // --------------------------------------------------------
 
-    const { data: resultadoRpc, error: rpcError } = await supabase.rpc(
-      'crear_reserva_recurso',
-      {
-        p_id_cliente: cliente.id_cliente,
-        p_id_recurso: body.id_recurso,
-        p_fecha_reserva: body.fecha_reserva,
-        p_hora_inicio: body.hora_inicio,
-        p_hora_fin: horaFin,
-        p_duracion_minutos: body.duracion_minutos,
-        p_costo_reserva: costoReserva,
-      }
-    );
+    const codigoVoucher =
+      typeof body.codigo_voucher === 'string'
+        ? body.codigo_voucher.trim()
+        : '';
+
+    // Con voucher, la validación y el consumo del cupo ocurren dentro de
+    // crear_reserva_con_voucher (única función transaccional). Esta ruta no decide nada.
+    const { data: resultadoRpc, error: rpcError } = codigoVoucher
+      ? await supabase.rpc('crear_reserva_con_voucher', {
+          p_chat_id: body.chat_id,
+          p_codigo: codigoVoucher,
+          p_id_recurso: body.id_recurso,
+          p_fecha_reserva: body.fecha_reserva,
+          p_hora_inicio: body.hora_inicio,
+          p_duracion_minutos: body.duracion_minutos,
+        })
+      : await supabase.rpc('crear_reserva_recurso', {
+          p_id_cliente: cliente.id_cliente,
+          p_id_recurso: body.id_recurso,
+          p_fecha_reserva: body.fecha_reserva,
+          p_hora_inicio: body.hora_inicio,
+          p_hora_fin: horaFin,
+          p_duracion_minutos: body.duracion_minutos,
+        });
 
     if (rpcError) {
       await logSystemEvent({
@@ -457,7 +429,6 @@ export async function POST(request: NextRequest) {
           hora_inicio: body.hora_inicio,
           hora_fin: horaFin,
           duracion_minutos: body.duracion_minutos,
-          costo_reserva: costoReserva,
         },
       });
 
@@ -482,6 +453,15 @@ export async function POST(request: NextRequest) {
       if (errorCode === 'RECURSO_NO_DISPONIBLE') {
         status = 409;
       }
+
+      if (errorCode === 'VOUCHER_BLOQUEADO_TEMPORALMENTE') {
+        status = 429;
+      } else if (
+        typeof errorCode === 'string' &&
+        errorCode.startsWith('VOUCHER_')
+      ) {
+        status = 422;
+      }
       
       await logSystemEvent({
         level: 'warning',
@@ -500,7 +480,6 @@ export async function POST(request: NextRequest) {
           hora_inicio: body.hora_inicio,
           hora_fin: horaFin,
           duracion_minutos: body.duracion_minutos,
-          costo_reserva: costoReserva,
         },
       });
 
@@ -514,6 +493,8 @@ export async function POST(request: NextRequest) {
     }
 
     const idReserva = resultadoRpc.id_reserva;
+    const costoReserva = Number(resultadoRpc.costo_reserva);
+    const requierePago = resultadoRpc.requiere_pago !== false;
 
     await logSystemEvent({
     level: 'info',
@@ -552,6 +533,10 @@ export async function POST(request: NextRequest) {
         duracion_minutos,
         estado_reserva,
         costo_reserva,
+        costo_base,
+        monto_descuento,
+        id_descuento,
+        id_voucher,
         fecha_expiracion_pago,
         created_at,
         updated_at
@@ -592,15 +577,21 @@ export async function POST(request: NextRequest) {
           capacidad: recurso.capacidad,
         },
         tarifa: {
-          id_tarifa: tarifa.id_tarifa,
-          tipo_cliente: tarifa.tipo_cliente,
-          duracion_minutos: tarifa.duracion_minutos,
-          precio: costoReserva,
+          tipo_cliente: cliente.tipo_cliente,
+          duracion_minutos: body.duracion_minutos,
+          precio: reserva.costo_base ?? costoReserva,
         },
+        // n8n debe omitir el link de Mercado Pago cuando requiere_pago es false.
+        requiere_pago: requierePago,
+        voucher: resultadoRpc.voucher === true,
+        voucher_usos_restantes_mes: resultadoRpc.usos_restantes_mes ?? null,
       },
-      message:
-        `Reserva creada exitosamente para ${cliente.nombre} ${cliente.apellido}. ` +
-        `Tiene 10 minutos para completar el pago.`,
+      message: !requierePago && resultadoRpc.voucher === true
+        ? `Reserva confirmada con voucher para ${cliente.nombre} ${cliente.apellido}. No requiere pago.`
+        : requierePago
+        ? `Reserva creada exitosamente para ${cliente.nombre} ${cliente.apellido}. ` +
+          `Tiene 10 minutos para completar el pago.`
+        : `Reserva confirmada para ${cliente.nombre} ${cliente.apellido}. No requiere pago.`,
     });
     } catch (e) {
       await logSystemEvent({

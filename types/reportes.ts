@@ -61,6 +61,20 @@ export interface IngresoPorRecursoReporte {
   ingresos: number;
 }
 
+export interface DetallePagoAprobadoReporte {
+  id_pago: number;
+  mp_id: string | null;
+  id_reserva: number;
+  fecha_pago: string;
+  fecha_reserva: string;
+  hora_inicio: string;
+  hora_fin: string;
+  recurso_nombre: string;
+  cliente_nombre: string;
+  estado_reserva: string;
+  monto: number;
+}
+
 export interface DetalleCancelacionReporte {
   id_reserva: number;
   fecha_reserva: string;
@@ -101,6 +115,8 @@ export interface DetalleReservaReporte {
   duracion_minutos: number | null;
   estado_reserva: string;
   costo_reserva: number;
+  // Reserva con descuento o voucher.
+  con_beneficio: boolean;
   cliente_nombre: string;
   cliente_tipo: string;
   recurso_nombre: string;
@@ -115,6 +131,7 @@ export interface ReporteCompleto {
   clientes: ClienteReporte[];
   ingresosPorEstadoPago: IngresoPorEstadoPagoReporte[];
   ingresosPorRecurso: IngresoPorRecursoReporte[];
+  detallePagosAprobados: DetallePagoAprobadoReporte[];
   cancelaciones: CancelacionesReporte;
   bloqueos: BloqueoReporte[];
   ocupacion: OcupacionRecursoReporte[];

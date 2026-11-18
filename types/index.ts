@@ -79,6 +79,12 @@ export interface Reserva {
     costo_reserva: number;
     created_at?: string;
 
+    // Snapshot de precio (calculado por la base): costo_reserva = costo_base - monto_descuento.
+    costo_base?: number | null;
+    monto_descuento?: number | null;
+    id_descuento?: number | null;
+    id_voucher?: number | null;
+
     id_recurso?: number | null;
     recurso?: Recurso;
     duracion_minutos?: number | null;
@@ -110,6 +116,23 @@ export interface NuevaReservaRecursoInput {
     fecha_reserva: string;
     hora_inicio: string;
     duracion_minutos: number;
+}
+
+// Resultado de public.calcular_precio_reserva (única fuente de cálculo de precio/descuento).
+export interface PrecioReserva {
+    costo_base: number;
+    monto_descuento: number;
+    costo_final: number;
+    id_descuento: number | null;
+    descuento_nombre: string | null;
+    porcentaje_descuento: number;
+    tipo_cliente: 'SOCIO' | 'NO_SOCIO';
+}
+
+export interface OpcionesCancelacionReserva {
+    // Solo reservas con voucher: true = el turno cuenta como usado y no devuelve el cupo.
+    consumirCupoVoucher?: boolean;
+    motivo?: string;
 }
 
 
